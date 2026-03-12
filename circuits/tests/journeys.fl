@@ -1,0 +1,313 @@
+/// poly-git journey tests — end-to-end lifecycle validation
+/// lex polylabs/poly-git/tests
+///
+/// These journeys exercise the complete VCS lifecycle through the
+/// poly-git SmartCircuit: identity derivation, repo creation,
+/// push/pull FSM traversal, governance actions, and safety features.
+
+import polykit_identity from "polykit-identity@^0.2.0"
+import polykit_metering from "polykit-metering@^0.2.0"
+import polykit_rate_limiter from "polykit-rate-limiter@^0.2.0"
+
+// ── Push Lifecycle Journey ──────────────────────────────────────────────────
+
+journey push_full_lifecycle {
+    party alice
+    party server
+
+    // 1. Derive SPARK identity
+    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step alice user = polykit_identity::derive_user_id(alice.keys.signing_public_key)
+
+    // 2. Create repo (genesis governance action)
+    step alice repo = repo_create(
+        alice.keys,
+        "polylabs-dev/test-repo",
+        { classification: "internal", default_branch: "main" }
+    )
+
+    // 3. Check rate limit before push
+    step server rate = check_vcs_rate(alice.user, "push", 10)
+
+    // 4. Build push manifest
+    step alice manifest = {
+        objects: [
+            { hash: sha3_256("blob1"), size: 128, object_type: "blob" },
+            { hash: sha3_256("tree1"), size: 64, object_type: "tree" },
+            { hash: sha3_256("commit1"), size: 256, object_type: "commit" },
+        ],
+        ref_updates: [
+            { ref_name: "refs/heads/main", new_hash: sha3_256("commit1") }
+        ],
+        total_bytes: 448,
+    }
+
+    // 5. Sign manifest
+    step alice sig = polykit_identity::sign_message(
+        alice.keys.signing_secret_key,
+        encode(alice.manifest)
+    )
+
+    // 6. FSM: Receiving -> Validating -> Storing -> Merging -> Merged
+    step server fsm_start = fsm_advance push_lifecycle to Receiving
+    step server fsm_recv = fsm_advance push_lifecycle from Receiving to Validating
+        with { event: all_objects_received, manifest: alice.manifest }
+    step server fsm_valid = fsm_advance push_lifecycle from Validating to Storing
+        with { event: validation_passed }
+    step server fsm_store = fsm_advance push_lifecycle from Storing to Merging
+        with { event: objects_stored }
+    step server fsm_merge = fsm_advance push_lifecycle from Merging to Merged
+        with { event: refs_updated }
+
+    // 7. Meter the push
+    step server meter = meter_push(alice.user, 3, 448)
+
+    invariant "push_completes" { server.fsm_merge.state == "Merged" }
+    invariant "rate_allowed" { server.rate.allowed == true }
+    invariant "objects_counted" { alice.manifest.objects.len == 3 }
+}
+
+// ── Pull Lifecycle Journey ──────────────────────────────────────────────────
+
+journey pull_full_lifecycle {
+    party bob
+    party server
+
+    step bob keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step bob user = polykit_identity::derive_user_id(bob.keys.signing_public_key)
+
+    // Check read access
+    step server access = check_permission(bob.user, "polylabs-dev/test-repo", "read")
+
+    // FSM: Negotiating -> Collecting -> Transferring -> Complete
+    step server fsm_start = fsm_advance pull_lifecycle to Negotiating
+    step server fsm_neg = fsm_advance pull_lifecycle from Negotiating to Collecting
+        with { event: have_check_complete, wants: 3, haves: 0 }
+    step server fsm_collect = fsm_advance pull_lifecycle from Collecting to Transferring
+        with { event: objects_collected }
+    step server fsm_transfer = fsm_advance pull_lifecycle from Transferring to Complete
+        with { event: transfer_complete }
+
+    step server meter = meter_pull(bob.user, 3, 448)
+
+    invariant "pull_completes" { server.fsm_transfer.state == "Complete" }
+    invariant "access_granted" { server.access == true }
+}
+
+// ── Push Rollback Journey (WAL safety) ──────────────────────────────────────
+
+journey push_rollback_on_failure {
+    party alice
+    party server
+
+    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+
+    // Start push FSM
+    step server fsm_start = fsm_advance push_lifecycle to Receiving
+    step server fsm_recv = fsm_advance push_lifecycle from Receiving to Validating
+        with { event: all_objects_received }
+
+    // WAL checkpoint written before validation
+    step server wal_check = assert_wal_checkpoint(push_lifecycle, "Validating")
+
+    // Validation fails (e.g., branch protection violation)
+    step server fsm_reject = fsm_advance push_lifecycle from Validating to Rejected
+        with { event: validation_failed, reason: "branch_protected" }
+
+    // WAL rollback restores pre-push state
+    step server wal_rollback = assert_wal_rollback(push_lifecycle)
+
+    invariant "rejected_state" { server.fsm_reject.state == "Rejected" }
+    invariant "wal_written" { server.wal_check.exists == true }
+    invariant "state_rolled_back" { server.wal_rollback.clean == true }
+}
+
+// ── Push Timeout Journey (timeout enforcement) ──────────────────────────────
+
+journey push_timeout_enforcement {
+    party alice
+    party server
+
+    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+
+    // Start receiving objects
+    step server fsm_start = fsm_advance push_lifecycle to Receiving
+
+    // Simulate timeout: Receiving state has 120s timeout
+    step server timeout = simulate_timeout(push_lifecycle, "Receiving", 121s)
+
+    // FSM should auto-transition to TimedOut
+    step server fsm_state = assert_fsm_state(push_lifecycle, "TimedOut")
+
+    invariant "timed_out" { server.fsm_state.state == "TimedOut" }
+    invariant "timeout_triggered" { server.timeout.triggered == true }
+}
+
+// ── Retry Journey (transient failure recovery) ──────────────────────────────
+
+journey push_retry_on_transient_failure {
+    party alice
+    party server
+
+    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+
+    step server fsm_start = fsm_advance push_lifecycle to Receiving
+    step server fsm_recv = fsm_advance push_lifecycle from Receiving to Validating
+        with { event: all_objects_received }
+    step server fsm_valid = fsm_advance push_lifecycle from Validating to Storing
+        with { event: validation_passed }
+
+    // Storage fails transiently (network partition to Stratum backend)
+    step server fail_1 = fsm_action_fail push_lifecycle "store_objects"
+        with { error: "stratum_timeout" }
+
+    // Retry 1 (exponential backoff: 1s)
+    step server retry_1 = assert_retry_count(push_lifecycle, "Storing", 1)
+
+    // Retry 2 succeeds
+    step server fsm_store = fsm_advance push_lifecycle from Storing to Merging
+        with { event: objects_stored }
+
+    invariant "recovered_after_retry" { server.fsm_store.state == "Merging" }
+    invariant "retry_counted" { server.retry_1.count == 1 }
+}
+
+// ── Governance Journey (repo creation + ACL) ─────────────────────────────────
+
+journey governance_repo_lifecycle {
+    party admin
+    party writer
+    party reader
+
+    step admin keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step writer keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step reader keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+
+    step admin user = polykit_identity::derive_user_id(admin.keys.signing_public_key)
+    step writer user = polykit_identity::derive_user_id(writer.keys.signing_public_key)
+    step reader user = polykit_identity::derive_user_id(reader.keys.signing_public_key)
+
+    // Genesis: create repo
+    step admin create = repo_create(
+        admin.keys,
+        "polylabs-dev/governed-repo",
+        { classification: "confidential", default_branch: "main" }
+    )
+
+    // Governance: grant write access
+    step admin grant_writer = acl_grant(
+        admin.keys,
+        "polylabs-dev/governed-repo",
+        writer.user,
+        "Writer"
+    )
+
+    // Governance: grant read access
+    step admin grant_reader = acl_grant(
+        admin.keys,
+        "polylabs-dev/governed-repo",
+        reader.user,
+        "Reader"
+    )
+
+    // Governance: protect main branch
+    step admin protect = branch_protect(
+        admin.keys,
+        "polylabs-dev/governed-repo",
+        "main",
+        { require_signature: true, require_review: true }
+    )
+
+    // Verify ACL enforcement
+    step _ writer_push = check_permission(writer.user, "polylabs-dev/governed-repo", "write")
+    step _ reader_push = check_permission(reader.user, "polylabs-dev/governed-repo", "write")
+    step _ reader_pull = check_permission(reader.user, "polylabs-dev/governed-repo", "read")
+
+    invariant "repo_created" { admin.create.success == true }
+    invariant "writer_can_push" { writer_push == true }
+    invariant "reader_cannot_push" { reader_push == false }
+    invariant "reader_can_pull" { reader_pull == true }
+    invariant "branch_protected" { admin.protect.success == true }
+}
+
+// ── Guard Fail-Closed Journey ───────────────────────────────────────────────
+
+journey guard_fail_closed {
+    party attacker
+    party server
+
+    step attacker keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step attacker user = polykit_identity::derive_user_id(attacker.keys.signing_public_key)
+
+    // Attempt push without ACL entry (guard should fail closed)
+    step server access = check_permission(attacker.user, "polylabs-dev/private-repo", "write")
+
+    // Attempt push with invalid signature
+    step server sig_check = signature_valid(
+        bytes(4627),  // garbage signature
+        bytes(32),     // message hash
+        attacker.keys.signing_public_key
+    )
+
+    invariant "no_acl_blocks" { server.access == false }
+    invariant "bad_sig_blocks" { server.sig_check == false }
+}
+
+// ── Concurrent Push Safety Journey ──────────────────────────────────────────
+
+journey concurrent_push_safety {
+    party alice
+    party bob
+    party server
+
+    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step bob keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+
+    // Both try to push to same ref simultaneously
+    step server alice_fsm = fsm_advance push_lifecycle to Receiving
+        with { session: "alice", ref: "refs/heads/main" }
+    step server bob_fsm = fsm_advance push_lifecycle to Receiving
+        with { session: "bob", ref: "refs/heads/main" }
+
+    // Alice completes first
+    step server alice_merge = fsm_advance push_lifecycle from Receiving to Merged
+        with { session: "alice", fast_forward: true }
+
+    // Bob's ref update detects conflict
+    step server bob_conflict = fsm_advance push_lifecycle from Validating to Rejected
+        with { session: "bob", reason: "ref_conflict" }
+
+    invariant "alice_wins" { server.alice_merge.state == "Merged" }
+    invariant "bob_rejected" { server.bob_conflict.state == "Rejected" }
+}
+
+// ── AI Observation Journey ──────────────────────────────────────────────────
+
+journey ai_corpus_observation {
+    party alice
+    party server
+
+    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step alice user = polykit_identity::derive_user_id(alice.keys.signing_public_key)
+
+    // Complete a push
+    step server push = fsm_advance push_lifecycle from Receiving to Merged
+        with { objects: 5, bytes: 2048 }
+
+    // Record observation for AI corpus
+    step server obs = record_push_observation(
+        alice.user,
+        "polylabs-dev/test-repo",
+        5,     // objects
+        2048,  // bytes
+        320,   // latency_ms
+        "Merged",
+        false, // no rollback
+        false, // no timeout
+        0,     // no retries
+        0      // no conflicts
+    )
+
+    invariant "observation_recorded" { server.obs.recorded == true }
+    invariant "latency_captured" { server.obs.latency_ms == 320 }
+}
