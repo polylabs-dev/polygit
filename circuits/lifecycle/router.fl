@@ -1,0 +1,59 @@
+/// router.fl — Push/pull lifecycle FSMs with all 7 safety features
+/// lex polylabs/poly-git/lifecycle
+///
+/// Pattern: toddrooke/invest/circuits/lifecycle/position_fsm.fl
+
+// ── Push Lifecycle FSM ──────────────────────────────────────────────────────
+
+state_machine push_lifecycle {
+    initial Receiving
+    persistence wal
+    rollback_on_failure true
+    history_limit 10000
+    terminal [Merged, Rejected, TimedOut]
+    ai_anomaly_detection true
+
+    Receiving { timeout 120s -> TimedOut }
+    Validating { timeout 30s -> TimedOut }
+    Signing { timeout 10s -> TimedOut }
+    Merging { timeout 30s -> TimedOut }
+
+    Receiving -> Validating when all_objects_received
+        retry { max: 3, backoff: exponential(1s) }
+    Validating -> Signing when validation_passed
+        guard check_objects_valid(manifest)
+        guard check_ref_conflict(manifest)
+        guard check_branch_protection(manifest)
+        guard check_push_size_limits(manifest)
+    Validating -> Rejected when validation_failed
+    Signing -> Merging when signature_verified
+        guard signature_valid(commit, signing_key)
+    Signing -> Rejected when signature_invalid
+    Merging -> Merged when refs_updated
+        retry { max: 2, backoff: fixed(500ms) }
+    Merging -> Rejected when merge_conflict
+}
+
+// ── Pull Lifecycle FSM ──────────────────────────────────────────────────────
+
+state_machine pull_lifecycle {
+    initial NegotiatingWants
+    persistence wal
+    rollback_on_failure true
+    history_limit 10000
+    terminal [Complete, Rejected, TimedOut]
+    ai_anomaly_detection true
+
+    NegotiatingWants { timeout 30s -> TimedOut }
+    ComputingDelta { timeout 60s -> TimedOut }
+    Transferring { timeout 300s -> TimedOut }
+
+    NegotiatingWants -> ComputingDelta when wants_resolved
+        guard check_read_access(puller_id, repo_id)
+    NegotiatingWants -> Rejected when access_denied
+    ComputingDelta -> Transferring when delta_ready
+        retry { max: 2, backoff: fixed(1s) }
+    Transferring -> Complete when all_objects_sent
+        retry { max: 3, backoff: exponential(2s) }
+    Transferring -> TimedOut when transfer_stalled
+}

@@ -1,0 +1,58 @@
+/// graph.fl — VCS repository graph (invest pattern)
+/// lex polylabs/poly-git/graph
+///
+/// Graph overlays, inline series, ai_feed directives, CSR storage.
+/// Pattern: toddrooke/invest/circuits/graphs/portfolio.fl
+
+graph vcs_repo_graph {
+    node RepoNode        : RepoConfig
+    node BranchNode      : VcsRef
+    node CommitNode      : VcsCommit
+    node PolicyNode      : BranchPolicy
+    node AclNode         : AclEntry
+    node TagNode         : VcsTag
+
+    edge has_branch      : RepoNode -> BranchNode
+    edge has_commit      : BranchNode -> CommitNode
+    edge parent_of       : CommitNode -> CommitNode
+    edge has_policy      : RepoNode -> PolicyNode
+    edge has_acl         : RepoNode -> AclNode
+    edge has_tag         : RepoNode -> TagNode
+
+    overlay activity on RepoNode {
+        push_count_24h, pull_count_24h, active_branches,
+        last_push_at, last_pull_at
+    }
+    overlay health on RepoNode {
+        rollback_count, timeout_count, retry_count,
+        avg_push_latency_ms, error_rate
+    }
+    overlay access_summary on RepoNode {
+        reader_count, writer_count, admin_count,
+        last_acl_change_at
+    }
+
+    series push_history {
+        over nodes(CommitNode)
+        fields: [author_id, objects_count, size_bytes, latency_ms, rollback]
+    }
+    series pull_history {
+        over nodes(RepoNode)
+        fields: [puller_id, objects_fetched, size_bytes, latency_ms]
+    }
+    series governance_history {
+        over nodes(RepoNode)
+        fields: [actor_id, action_type, target, timestamp]
+    }
+
+    ai_feed push_patterns
+    ai_feed acl_change_patterns
+    ai_feed conflict_rates
+
+    storage csr {
+        tier bram  { capacity: 1_000 }
+        tier ddr   { capacity: 100_000 }
+    }
+
+    sign ml_dsa_87
+}

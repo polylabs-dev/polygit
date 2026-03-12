@@ -1,0 +1,152 @@
+/// streams.fl — VCS event streams
+/// lex polylabs/poly-git/streams
+
+stream push_events {
+    topic "lex://estream/apps/polylabs.git/push"
+    retention 365d
+    consumers [console, audit, streamsight, corpus]
+
+    event push_started {
+        repo_id: bytes(32),
+        pusher_id: bytes(16),
+        ref_count: u32,
+        objects_count: u64,
+        timestamp: u64,
+    }
+    event push_completed {
+        repo_id: bytes(32),
+        pusher_id: bytes(16),
+        latency_ms: u64,
+        objects_merged: u64,
+        timestamp: u64,
+    }
+    event push_rejected {
+        repo_id: bytes(32),
+        pusher_id: bytes(16),
+        reason: bytes(256),
+        timestamp: u64,
+    }
+    event push_rollback {
+        repo_id: bytes(32),
+        pusher_id: bytes(16),
+        fsm_state: bytes(32),
+        reason: bytes(256),
+        timestamp: u64,
+    }
+
+    @streamsight_filter baseline
+    @streamsight_sensitivity 2.0
+}
+
+stream pull_events {
+    topic "lex://estream/apps/polylabs.git/pull"
+    retention 365d
+    consumers [console, audit, streamsight]
+
+    event pull_started {
+        repo_id: bytes(32),
+        puller_id: bytes(16),
+        wants_count: u32,
+        timestamp: u64,
+    }
+    event pull_completed {
+        repo_id: bytes(32),
+        puller_id: bytes(16),
+        objects_sent: u64,
+        latency_ms: u64,
+        timestamp: u64,
+    }
+
+    @streamsight_filter baseline
+}
+
+stream ref_events {
+    topic "lex://estream/apps/polylabs.git/refs"
+    retention 365d
+    consumers [console, audit]
+
+    event ref_updated {
+        repo_id: bytes(32),
+        ref_name: bytes(256),
+        old_hash: bytes(32),
+        new_hash: bytes(32),
+        actor_id: bytes(16),
+        timestamp: u64,
+    }
+    event ref_created {
+        repo_id: bytes(32),
+        ref_name: bytes(256),
+        target_hash: bytes(32),
+        actor_id: bytes(16),
+        timestamp: u64,
+    }
+    event ref_deleted {
+        repo_id: bytes(32),
+        ref_name: bytes(256),
+        actor_id: bytes(16),
+        timestamp: u64,
+    }
+}
+
+stream governance_events {
+    topic "lex://estream/apps/polylabs.git/governance"
+    retention permanent
+    consumers [console, audit, compliance, cortex]
+
+    event repo_created {
+        repo_id: bytes(32),
+        name: bytes(256),
+        owner_id: bytes(16),
+        classification: bytes(32),
+        timestamp: u64,
+    }
+    event acl_changed {
+        repo_id: bytes(32),
+        principal_id: bytes(16),
+        role: bytes(32),
+        action: bytes(16),
+        actor_id: bytes(16),
+        timestamp: u64,
+    }
+    event branch_policy_changed {
+        repo_id: bytes(32),
+        branch_pattern: bytes(256),
+        actor_id: bytes(16),
+        timestamp: u64,
+    }
+
+    @streamsight_filter none
+}
+
+stream safety_events {
+    topic "lex://estream/apps/polylabs.git/safety"
+    retention 365d
+    consumers [console, alerts, streamsight]
+
+    event fsm_timeout {
+        fsm: bytes(32),
+        state: bytes(32),
+        repo_id: bytes(32),
+        user_id: bytes(16),
+        timeout_ms: u64,
+    }
+    event fsm_rollback {
+        fsm: bytes(32),
+        from_state: bytes(32),
+        to_state: bytes(32),
+        repo_id: bytes(32),
+        reason: bytes(256),
+    }
+    event fsm_retry_exhausted {
+        fsm: bytes(32),
+        state: bytes(32),
+        max_retries: u8,
+        repo_id: bytes(32),
+    }
+    event guard_fail_closed {
+        guard: bytes(64),
+        repo_id: bytes(32),
+        user_id: bytes(16),
+        reason: bytes(256),
+    }
+}

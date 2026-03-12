@@ -1,0 +1,38 @@
+/// manifest.fl — Push/pull manifest for object transfer
+/// lex polylabs/poly-git/data
+
+data PushManifest : vcs v1 {
+    repo_id: bytes(32),
+    ref_updates: list<RefUpdate>,
+    objects: list<ObjectRef>,
+    pusher_id: bytes(16),
+    timestamp: u64,
+    signature: bytes(4627),
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [repo_id, pusher_id, timestamp] }
+    observe metrics [repo_id, pusher_id] level adaptive
+
+data PullManifest : vcs v1 {
+    repo_id: bytes(32),
+    wants: list<bytes(32)>,
+    haves: list<bytes(32)>,
+    puller_id: bytes(16),
+    timestamp: u64,
+}
+    encode
+    observe metrics [repo_id, puller_id] level adaptive
+
+data RefUpdate : vcs v1 {
+    ref_name: bytes(256),
+    old_hash: bytes(32),
+    new_hash: bytes(32),
+}
+    encode
+
+data ObjectRef : vcs v1 {
+    hash: bytes(32),
+    object_type: u8,
+    size: u64,
+}
+    encode

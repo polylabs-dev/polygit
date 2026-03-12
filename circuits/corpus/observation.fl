@@ -1,0 +1,94 @@
+/// observation.fl — AI corpus observation data for accretive intelligence
+/// lex polylabs/poly-git/corpus
+
+data VcsObservation : vcs v1 {
+    repo_id: bytes(32),
+    user_id: bytes(16),
+    operation: bytes(32),
+    objects_count: u64,
+    total_bytes: u64,
+    latency_ms: u64,
+    fsm_state: bytes(32),
+    rollback_occurred: bool,
+    timeout_occurred: bool,
+    retry_count: u8,
+    conflict_detected: bool,
+    branch_protected: bool,
+    classification: bytes(32),
+    timestamp: u64,
+}
+    encode
+    observe metrics [operation, fsm_state, rollback_occurred, timeout_occurred] level adaptive
+    cortex {
+        expose [operation, latency_ms, rollback_occurred, timeout_occurred, retry_count]
+        infer on_write
+        on_anomaly alert
+    }
+
+circuit record_push_observation(
+    repo_id: bytes(32),
+    user_id: bytes(16),
+    objects_count: u64,
+    total_bytes: u64,
+    latency_ms: u64,
+    fsm_state: bytes(32),
+    rollback: bool,
+    timeout: bool,
+    retries: u8,
+    conflict: bool,
+    protected: bool,
+    classification: bytes(32)
+) -> VcsObservation
+    lex polylabs/poly-git/corpus
+    precision B
+    observe metrics: [observations_recorded]
+{
+    VcsObservation {
+        repo_id: repo_id,
+        user_id: user_id,
+        operation: "push",
+        objects_count: objects_count,
+        total_bytes: total_bytes,
+        latency_ms: latency_ms,
+        fsm_state: fsm_state,
+        rollback_occurred: rollback,
+        timeout_occurred: timeout,
+        retry_count: retries,
+        conflict_detected: conflict,
+        branch_protected: protected,
+        classification: classification,
+        timestamp: current_time_ms(),
+    }
+}
+
+circuit record_pull_observation(
+    repo_id: bytes(32),
+    user_id: bytes(16),
+    objects_count: u64,
+    total_bytes: u64,
+    latency_ms: u64,
+    fsm_state: bytes(32),
+    timeout: bool,
+    retries: u8
+) -> VcsObservation
+    lex polylabs/poly-git/corpus
+    precision B
+    observe metrics: [observations_recorded]
+{
+    VcsObservation {
+        repo_id: repo_id,
+        user_id: user_id,
+        operation: "pull",
+        objects_count: objects_count,
+        total_bytes: total_bytes,
+        latency_ms: latency_ms,
+        fsm_state: fsm_state,
+        rollback_occurred: false,
+        timeout_occurred: timeout,
+        retry_count: retries,
+        conflict_detected: false,
+        branch_protected: false,
+        classification: "",
+        timestamp: current_time_ms(),
+    }
+}

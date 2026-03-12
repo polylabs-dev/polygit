@@ -1,0 +1,197 @@
+/// governance.fl — Repository governance actions
+/// lex polylabs/poly-git/governance
+///
+/// Repo creation is a genesis event. ACL/policy changes are governance actions.
+/// All actions are signed, versioned, and merkle-rooted.
+
+data GovernanceAction : vcs v1 {
+    action_id: bytes(32),
+    repo_id: bytes(32),
+    actor_id: bytes(16),
+    action_type: bytes(32),
+    payload: bytes(4096),
+    version: u64,
+    merkle_root: bytes(32),
+    timestamp: u64,
+    signature: bytes(4627),
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [action_id, repo_id, actor_id, action_type, merkle_root, timestamp] }
+    attest { povc true, anchor_field merkle_root }
+    store graph { in: vcs_repo_graph, as: GovernanceNode }
+    observe metrics [action_type, actor_id] level adaptive
+    cortex {
+        expose [action_type, actor_id, repo_id]
+        infer on_write
+        on_anomaly alert
+    }
+
+/// Genesis event — create a new repository
+circuit repo_create(
+    name: bytes(256),
+    description: bytes(1024),
+    owner_id: bytes(16),
+    classification: bytes(32),
+    signing_key: bytes(4896)
+) -> GovernanceAction
+    lex polylabs/poly-git/governance
+    precision A
+    povc true
+    @guard(block_on: owner_unauthorized)
+    observe metrics: [repos_created]
+{
+    let repo_id = sha3_256(concat(name, owner_id, current_time_ms()))
+    let payload = encode(RepoConfig {
+        repo_id: repo_id,
+        name: name,
+        description: description,
+        owner_id: owner_id,
+        classification: classification,
+        default_branch: "refs/heads/main",
+        created_at: current_time_ms(),
+        updated_at: current_time_ms(),
+    })
+
+    let merkle = sha3_256(concat("repo_create", repo_id, payload))
+    let sig = mldsa_sign(merkle, signing_key)
+
+    GovernanceAction {
+        action_id: sha3_256(concat("genesis", repo_id)),
+        repo_id: repo_id,
+        actor_id: owner_id,
+        action_type: "repo_create",
+        payload: payload,
+        version: 1,
+        merkle_root: merkle,
+        timestamp: current_time_ms(),
+        signature: sig,
+    }
+}
+
+/// Grant ACL entry
+circuit acl_grant(
+    repo_id: bytes(32),
+    principal_id: bytes(16),
+    role: bytes(32),
+    scope: bytes(256),
+    actor_id: bytes(16),
+    signing_key: bytes(4896)
+) -> GovernanceAction
+    lex polylabs/poly-git/governance
+    precision A
+    povc true
+    @guard(block_on: actor_not_admin)
+    observe metrics: [acl_grants]
+{
+    let payload = encode(AclEntry {
+        principal_id: principal_id,
+        role: role,
+        scope: scope,
+        granted_by: actor_id,
+        granted_at: current_time_ms(),
+        expires_at: 0,
+    })
+    let merkle = sha3_256(concat("acl_grant", repo_id, payload))
+    let sig = mldsa_sign(merkle, signing_key)
+
+    GovernanceAction {
+        action_id: sha3_256(concat("acl_grant", repo_id, principal_id, role)),
+        repo_id: repo_id,
+        actor_id: actor_id,
+        action_type: "acl_grant",
+        payload: payload,
+        version: 1,
+        merkle_root: merkle,
+        timestamp: current_time_ms(),
+        signature: sig,
+    }
+}
+
+/// Revoke ACL entry
+circuit acl_revoke(
+    repo_id: bytes(32),
+    principal_id: bytes(16),
+    role: bytes(32),
+    actor_id: bytes(16),
+    signing_key: bytes(4896)
+) -> GovernanceAction
+    lex polylabs/poly-git/governance
+    precision A
+    povc true
+    @guard(block_on: actor_not_admin)
+    observe metrics: [acl_revocations]
+{
+    let merkle = sha3_256(concat("acl_revoke", repo_id, principal_id, role))
+    let sig = mldsa_sign(merkle, signing_key)
+
+    GovernanceAction {
+        action_id: sha3_256(concat("acl_revoke", repo_id, principal_id, role)),
+        repo_id: repo_id,
+        actor_id: actor_id,
+        action_type: "acl_revoke",
+        payload: concat(principal_id, ":", role),
+        version: 1,
+        merkle_root: merkle,
+        timestamp: current_time_ms(),
+        signature: sig,
+    }
+}
+
+/// Set branch protection policy
+circuit branch_protect(
+    repo_id: bytes(32),
+    policy: BranchPolicy,
+    actor_id: bytes(16),
+    signing_key: bytes(4896)
+) -> GovernanceAction
+    lex polylabs/poly-git/governance
+    precision A
+    povc true
+    @guard(block_on: actor_not_maintainer)
+    observe metrics: [branch_policies_set]
+{
+    let payload = encode(policy)
+    let merkle = sha3_256(concat("branch_protect", repo_id, payload))
+    let sig = mldsa_sign(merkle, signing_key)
+
+    GovernanceAction {
+        action_id: sha3_256(concat("branch_protect", repo_id, policy.branch_pattern)),
+        repo_id: repo_id,
+        actor_id: actor_id,
+        action_type: "branch_protect",
+        payload: payload,
+        version: 1,
+        merkle_root: merkle,
+        timestamp: current_time_ms(),
+        signature: sig,
+    }
+}
+
+/// Transfer repository ownership
+circuit repo_transfer(
+    repo_id: bytes(32),
+    new_owner_id: bytes(16),
+    actor_id: bytes(16),
+    signing_key: bytes(4896)
+) -> GovernanceAction
+    lex polylabs/poly-git/governance
+    precision A
+    povc true
+    @guard(block_on: actor_not_owner)
+    observe metrics: [repo_transfers]
+{
+    let merkle = sha3_256(concat("repo_transfer", repo_id, new_owner_id))
+    let sig = mldsa_sign(merkle, signing_key)
+
+    GovernanceAction {
+        action_id: sha3_256(concat("repo_transfer", repo_id)),
+        repo_id: repo_id,
+        actor_id: actor_id,
+        action_type: "repo_transfer",
+        payload: new_owner_id,
+        version: 1,
+        merkle_root: merkle,
+        timestamp: current_time_ms(),
+        signature: sig,
+    }
+}

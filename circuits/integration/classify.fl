@@ -1,0 +1,26 @@
+/// classify.fl — VCS content classification via polykit-eslm-classify
+/// lex polylabs/poly-git/integration
+
+import polykit_eslm_classify from "polykit-eslm-classify@^0.2.0"
+
+circuit classify_blob(content: bytes(65536), filename: bytes(256)) -> bytes(64)
+    lex polylabs/poly-git/integration
+    precision B
+    observe metrics: [blobs_classified]
+{
+    let suggestion = polykit_eslm_classify::classify_content(content, filename, "{}")
+    suggestion.tag
+}
+
+circuit classify_repo(sample_files: list<bytes(256)>) -> bytes(64)
+    lex polylabs/poly-git/integration
+    precision B
+    observe metrics: [repos_classified]
+{
+    let combined = ""
+    for f in sample_files {
+        combined = concat(combined, f, "\n")
+    }
+    let suggestion = polykit_eslm_classify::classify_content(combined, "MANIFEST", "{}")
+    suggestion.tag
+}

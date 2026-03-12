@@ -1,0 +1,119 @@
+/// widgets.fl — VCS console admin widgets
+/// lex polylabs/poly-git/console
+///
+/// Import polykit-console for event bus, RBAC, widget processing.
+
+import polykit_console from "polykit-console@^0.2.0"
+
+circuit push_activity_widget(
+    repo_id: bytes(32),
+    time_range_ms: u64
+) -> polykit_console::WidgetPayload
+    lex polylabs/poly-git/console
+    precision C
+    observe metrics: [push_activity_renders]
+{
+    let pushes = series_query(push_history, repo_id, time_range_ms)
+    let data = format_json("push_activity", pushes)
+    polykit_console::WidgetPayload {
+        widget_id: "poly-git-push-activity",
+        widget_type: "time_series",
+        data_json: data,
+        dirty: true,
+        timestamp_ms: current_time_ms(),
+    }
+}
+
+circuit health_dashboard_widget(
+    repo_id: bytes(32)
+) -> polykit_console::WidgetPayload
+    lex polylabs/poly-git/console
+    precision C
+    observe metrics: [health_dashboard_renders]
+{
+    let health = graph_overlay(vcs_repo_graph, repo_id, "health")
+    let data = format_json("health", health)
+    polykit_console::WidgetPayload {
+        widget_id: "poly-git-health",
+        widget_type: "status_panel",
+        data_json: data,
+        dirty: true,
+        timestamp_ms: current_time_ms(),
+    }
+}
+
+circuit acl_management_widget(
+    repo_id: bytes(32)
+) -> polykit_console::WidgetPayload
+    lex polylabs/poly-git/console
+    precision C
+    observe metrics: [acl_widget_renders]
+{
+    let acls = graph_query(vcs_repo_graph, "acls_for", repo_id)
+    let data = format_json("acl_management", acls)
+    polykit_console::WidgetPayload {
+        widget_id: "poly-git-acl-management",
+        widget_type: "table",
+        data_json: data,
+        dirty: true,
+        timestamp_ms: current_time_ms(),
+    }
+}
+
+circuit governance_audit_widget(
+    repo_id: bytes(32),
+    time_range_ms: u64
+) -> polykit_console::WidgetPayload
+    lex polylabs/poly-git/console
+    precision C
+    observe metrics: [governance_audit_renders]
+{
+    let actions = series_query(governance_history, repo_id, time_range_ms)
+    let data = format_json("governance_audit", actions)
+    polykit_console::WidgetPayload {
+        widget_id: "poly-git-governance-audit",
+        widget_type: "event_log",
+        data_json: data,
+        dirty: true,
+        timestamp_ms: current_time_ms(),
+    }
+}
+
+/// Check widget visibility against RBAC before rendering.
+circuit render_widget_if_authorized(
+    widget_id: bytes(64),
+    user_roles: list<bytes(32)>,
+    repo_id: bytes(32),
+    time_range_ms: u64
+) -> polykit_console::WidgetPayload
+    lex polylabs/poly-git/console
+    precision A
+    @guard(block_on: widget_unauthorized)
+{
+    let required = graph_query(vcs_rbac, "roles_for_widget", widget_id)
+    let allowed = polykit_console::check_access(user_roles, required)
+
+    if allowed {
+        match widget_id {
+            "poly-git-push-activity" => push_activity_widget(repo_id, time_range_ms),
+            "poly-git-health" => health_dashboard_widget(repo_id),
+            "poly-git-acl-management" => acl_management_widget(repo_id),
+            "poly-git-governance-audit" => governance_audit_widget(repo_id, time_range_ms),
+            _ => polykit_console::WidgetPayload {
+                widget_id: widget_id,
+                widget_type: "error",
+                data_json: "unknown widget",
+                dirty: false,
+                timestamp_ms: current_time_ms(),
+            },
+        }
+    } else {
+        polykit_console::WidgetPayload {
+            widget_id: widget_id,
+            widget_type: "unauthorized",
+            data_json: "",
+            dirty: false,
+            timestamp_ms: current_time_ms(),
+        }
+    }
+}

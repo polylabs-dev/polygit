@@ -1,0 +1,22 @@
+/// sanitize.fl — VCS content sanitization via polykit-sanitize
+/// lex polylabs/poly-git/integration
+
+import polykit_sanitize from "polykit-sanitize@^0.2.0"
+
+circuit sanitize_commit_message(message: bytes(8192)) -> bytes(8192)
+    lex polylabs/poly-git/integration
+    precision A
+    observe metrics: [commit_messages_sanitized]
+{
+    let result = polykit_sanitize::sanitize(message)
+    result.sanitized_data
+}
+
+circuit detect_pii_in_blob(content: bytes(65536)) -> bool
+    lex polylabs/poly-git/integration
+    precision A
+    observe metrics: [blob_pii_scans, pii_detected]
+{
+    let detections = polykit_sanitize::detect_only(content)
+    len(detections) > 0
+}

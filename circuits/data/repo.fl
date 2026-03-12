@@ -1,0 +1,43 @@
+/// repo.fl — Repository configuration and metadata
+/// lex polylabs/poly-git/data
+
+data RepoConfig : vcs v1 {
+    repo_id: bytes(32),
+    name: bytes(256),
+    description: bytes(1024),
+    owner_id: bytes(16),
+    classification: bytes(32),
+    default_branch: bytes(256),
+    created_at: u64,
+    updated_at: u64,
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [repo_id, name, owner_id] }
+    store graph { in: vcs_repo_graph, as: RepoNode }
+    govern {
+        classification -> cortex_classify
+        owner_id -> encrypted(owner)
+    }
+
+data BranchPolicy : vcs v1 {
+    branch_pattern: bytes(256),
+    required_reviewers: u8,
+    require_signed_commits: bool,
+    require_linear_history: bool,
+    allow_force_push: bool,
+    restrict_push_to_roles: list<bytes(32)>,
+}
+    encode
+    store graph { in: vcs_repo_graph, as: PolicyNode }
+
+data AclEntry : vcs v1 {
+    principal_id: bytes(16),
+    role: bytes(32),
+    scope: bytes(256),
+    granted_by: bytes(16),
+    granted_at: u64,
+    expires_at: u64,
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [principal_id, role, scope, granted_by] }
+    store graph { in: vcs_repo_graph, as: AclNode }

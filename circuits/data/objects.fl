@@ -1,0 +1,73 @@
+/// objects.fl — VCS object types (blob, tree, commit, tag)
+/// lex polylabs/poly-git/data
+/// Epic: polylabs-dev/poly-git
+
+component poly_git version "0.1.0" {
+    export VcsBlob, VcsTree, VcsCommit, VcsTag, VcsRef, TreeEntry
+}
+
+// ── VCS Object Types ────────────────────────────────────────────────────────
+
+data VcsBlob : vcs v1 {
+    hash: bytes(32),
+    content: bytes(1048576),
+    size: u64,
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [hash, size] }
+    store kv { key: hash }
+    observe metrics [size] level adaptive
+
+data TreeEntry : vcs v1 {
+    mode: u32,
+    name: bytes(256),
+    hash: bytes(32),
+}
+    encode
+
+data VcsTree : vcs v1 {
+    hash: bytes(32),
+    entries: list<TreeEntry>,
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [hash] }
+    store kv { key: hash }
+
+data VcsCommit : vcs v1 {
+    hash: bytes(32),
+    tree_hash: bytes(32),
+    parent_hashes: list<bytes(32)>,
+    author_id: bytes(16),
+    author_name: bytes(128),
+    author_email: bytes(128),
+    committer_id: bytes(16),
+    message: bytes(8192),
+    timestamp: u64,
+    signature: bytes(4627),
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [hash, tree_hash, author_id, message, timestamp] }
+    store kv { key: hash }
+    observe metrics [author_id] level adaptive
+
+data VcsTag : vcs v1 {
+    name: bytes(256),
+    target_hash: bytes(32),
+    tagger_id: bytes(16),
+    message: bytes(4096),
+    timestamp: u64,
+    signature: bytes(4627),
+}
+    encode
+    sign { algorithm ml_dsa_87, fields [name, target_hash, tagger_id] }
+    store kv { key: name }
+
+data VcsRef : vcs v1 {
+    name: bytes(256),
+    target_hash: bytes(32),
+    is_symbolic: bool,
+    updated_at: u64,
+}
+    encode
+    store kv { key: name }
+    observe metrics [name] level adaptive

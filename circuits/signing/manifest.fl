@@ -1,0 +1,43 @@
+/// manifest.fl — SPARK signing for VCS operations via polykit-identity
+/// lex polylabs/poly-git/signing
+
+import polykit_identity from "polykit-identity@^0.2.0"
+
+circuit derive_vcs_keys(master_seed: bytes(32)) -> polykit_identity::DerivedKeys
+    lex polylabs/poly-git/signing
+    precision A
+    observe metrics: [vcs_key_derivations]
+{
+    polykit_identity::derive_keys(master_seed, "poly-git-v1")
+}
+
+circuit sign_push_manifest(
+    manifest: PushManifest,
+    signing_key: bytes(4896)
+) -> bytes(4627)
+    lex polylabs/poly-git/signing
+    precision A
+    observe metrics: [push_manifests_signed]
+{
+    let message = sha3_256(concat(manifest.repo_id, manifest.pusher_id, manifest.timestamp))
+    polykit_identity::sign_message(signing_key, message)
+}
+
+circuit verify_push_signature(
+    manifest: PushManifest,
+    public_key: bytes(2592)
+) -> bool
+    lex polylabs/poly-git/signing
+    precision A
+    observe metrics: [push_signatures_verified]
+{
+    let message = sha3_256(concat(manifest.repo_id, manifest.pusher_id, manifest.timestamp))
+    polykit_identity::verify_signature(public_key, message, manifest.signature)
+}
+
+circuit create_vcs_app_context() -> polykit_identity::AppContext
+    lex polylabs/poly-git/signing
+    precision C
+{
+    polykit_identity::create_app_context("poly-git", "poly-git-v1", "polylabs.git")
+}

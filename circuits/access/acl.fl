@@ -1,0 +1,52 @@
+/// acl.fl — ACL enforcement with @guard decorators
+/// lex polylabs/poly-git/access
+
+/// Check if a user has a specific permission on a repo.
+circuit check_permission(
+    user_id: bytes(16),
+    repo_id: bytes(32),
+    permission: bytes(64)
+) -> bool
+    lex polylabs/poly-git/access
+    precision A
+    @guard(block_on: acl_missing)
+    observe metrics: [permission_checks, permission_denials]
+{
+    let user_roles = graph_query(vcs_repo_graph, "roles_for", repo_id, user_id)
+    let has_permission = false
+    for role in user_roles {
+        let perms = graph_query(vcs_rbac, "permissions_for", role)
+        for perm in perms {
+            if perm.name == permission {
+                has_permission = true
+            }
+        }
+    }
+    has_permission
+}
+
+/// Enforce write access (push_objects + update_refs).
+circuit enforce_write_access(
+    user_id: bytes(16),
+    repo_id: bytes(32)
+) -> bool
+    lex polylabs/poly-git/access
+    precision A
+    @guard(block_on: write_denied)
+    observe metrics: [write_access_checks]
+{
+    check_permission(user_id, repo_id, "push_objects")
+}
+
+/// Enforce admin access (manage_acl + manage_repo_config).
+circuit enforce_admin_access(
+    user_id: bytes(16),
+    repo_id: bytes(32)
+) -> bool
+    lex polylabs/poly-git/access
+    precision A
+    @guard(block_on: admin_denied)
+    observe metrics: [admin_access_checks]
+{
+    check_permission(user_id, repo_id, "manage_acl")
+}

@@ -1,0 +1,47 @@
+[component]
+name = "poly-git"
+version = "0.1.0"
+category = "smart-circuit"
+implementation_type = "FastLang"
+status = "Published"
+description = "FL-native VCS SmartCircuit: push/pull lifecycle FSMs with 7 safety features, Stratum graph, Cortex governance, SPARK auth"
+license = "Apache-2.0"
+repository = "https://github.com/polylabs-dev/poly-git"
+keywords = ["vcs", "git", "smart-circuit", "version-control", "spark", "fsm", "governance"]
+
+[component.author]
+name = "Poly Labs"
+email = "engineering@polylabs.dev"
+url = "https://polylabs.dev"
+
+[component.marketplace]
+pricing = "free"
+visibility = "open"
+
+[component.estream]
+min_version = "0.11.0"
+
+[component.dependencies]
+polykit-identity = "^0.2.0"
+polykit-metering = "^0.2.0"
+polykit-telemetry = "^0.2.0"
+polykit-rate-limiter = "^0.2.0"
+polykit-sanitize = "^0.2.0"
+polykit-eslm-classify = "^0.2.0"
+polykit-console = "^0.2.0"
+
+[component.schemas]
+provides = ["VcsBlob", "VcsTree", "VcsCommit", "VcsTag", "VcsRef", "RepoConfig", "BranchPolicy", "AclEntry", "PushManifest", "PullManifest", "GovernanceAction", "VcsObservation"]
+requires = ["DerivedKeys", "DimensionValues", "TelemetryEvent", "RateCheckResult", "SanitizationResult", "ClassificationSuggestion", "WidgetPayload"]
+
+[component.circuits]
+provides = ["repo_create", "acl_grant", "acl_revoke", "branch_protect", "repo_transfer", "check_objects_valid", "check_ref_conflict", "check_branch_protection", "check_push_size_limits", "check_permission", "enforce_write_access", "enforce_admin_access", "check_vcs_rate", "derive_vcs_keys", "sign_push_manifest", "verify_push_signature", "meter_push", "meter_pull", "classify_blob", "classify_repo", "sanitize_commit_message", "detect_pii_in_blob", "record_push_observation", "record_pull_observation", "push_activity_widget", "health_dashboard_widget", "acl_management_widget", "governance_audit_widget"]
+target = ["cpu"]
+
+[component.lifecycle]
+status = "active"
+breaking_change_notice_days = 90
+changelog = "CHANGELOG.md"
+
+[component.include]
+circuits = ["circuits/**/*.fl"]

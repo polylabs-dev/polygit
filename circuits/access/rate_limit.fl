@@ -1,0 +1,21 @@
+/// rate_limit.fl — VCS-specific rate limiting using polykit-rate-limiter
+/// lex polylabs/poly-git/access
+///
+/// Import polykit-rate-limiter from marketplace dependency.
+
+import polykit_rate_limiter from "polykit-rate-limiter@^0.2.0"
+
+circuit check_vcs_rate(
+    user_id: bytes(16),
+    operation: bytes(64)
+) -> bool
+    lex polylabs/poly-git/access
+    precision A
+    observe metrics: [rate_checks, rate_denials]
+{
+    let result = polykit_rate_limiter::check_rate(user_id, operation, "poly-git")
+    if result.allowed {
+        polykit_rate_limiter::record_operation(user_id, operation)
+    }
+    result.allowed
+}

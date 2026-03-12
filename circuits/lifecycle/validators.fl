@@ -1,0 +1,128 @@
+/// validators.fl — Trigger circuits for push lifecycle guards
+/// lex polylabs/poly-git/lifecycle
+///
+/// Separate trigger circuits (invest pattern) for each guard condition.
+
+/// Verify all objects in the push manifest are valid (hash matches content).
+circuit check_objects_valid(
+    manifest: PushManifest
+) -> bool
+    lex polylabs/poly-git/lifecycle
+    precision A
+    observe metrics: [object_validations, invalid_objects]
+    test golden {
+        input { manifest: PushManifest { repo_id: bytes(32), ref_updates: [], objects: [], pusher_id: bytes(16), timestamp: 0, signature: bytes(4627) } }
+        assert { result == true }
+    }
+{
+    let valid = true
+    for obj in manifest.objects {
+        let stored = kv_get("vcs_objects", obj.hash)
+        let computed_hash = sha3_256(stored)
+        if computed_hash != obj.hash {
+            valid = false
+        }
+    }
+    valid
+}
+
+/// Check for ref conflicts (non-fast-forward without force push).
+circuit check_ref_conflict(
+    manifest: PushManifest
+) -> bool
+    lex polylabs/poly-git/lifecycle
+    precision A
+    observe metrics: [ref_conflict_checks, conflicts_detected]
+{
+    let no_conflict = true
+    for update in manifest.ref_updates {
+        let current = kv_get("vcs_refs", update.ref_name)
+        if current.target_hash != update.old_hash {
+            no_conflict = false
+        }
+    }
+    no_conflict
+}
+
+/// Check branch protection policies.
+circuit check_branch_protection(
+    manifest: PushManifest
+) -> bool
+    lex polylabs/poly-git/lifecycle
+    precision A
+    @guard(block_on: policy_violated)
+    observe metrics: [branch_protection_checks, protection_violations]
+{
+    let allowed = true
+    for update in manifest.ref_updates {
+        let policy = graph_query(vcs_repo_graph, "policy_for", update.ref_name)
+        if policy != null {
+            if policy.require_signed_commits {
+                let commit = kv_get("vcs_objects", update.new_hash)
+                if commit.signature == bytes(4627) {
+                    allowed = false
+                }
+            }
+            if policy.require_linear_history {
+                let commit = kv_get("vcs_objects", update.new_hash)
+                if len(commit.parent_hashes) > 1 {
+                    allowed = false
+                }
+            }
+        }
+    }
+    allowed
+}
+
+/// Check push size limits (per-object and total).
+circuit check_push_size_limits(
+    manifest: PushManifest
+) -> bool
+    lex polylabs/poly-git/lifecycle
+    precision A
+    observe metrics: [size_limit_checks, oversized_pushes]
+{
+    let max_object_size = 104857600
+    let max_total_size = 1073741824
+    let total = 0
+    let within_limits = true
+
+    for obj in manifest.objects {
+        if obj.size > max_object_size {
+            within_limits = false
+        }
+        total = total + obj.size
+    }
+
+    if total > max_total_size {
+        within_limits = false
+    }
+
+    within_limits
+}
+
+/// Verify SPARK signature on a commit.
+circuit signature_valid(
+    commit: VcsCommit,
+    signing_key: bytes(2592)
+) -> bool
+    lex polylabs/poly-git/lifecycle
+    precision A
+    observe metrics: [signature_verifications, signature_failures]
+{
+    let message = sha3_256(concat(commit.hash, commit.tree_hash, commit.author_id, commit.message))
+    mldsa_verify(message, commit.signature, signing_key)
+}
+
+/// Check read access for pull operations.
+circuit check_read_access(
+    puller_id: bytes(16),
+    repo_id: bytes(32)
+) -> bool
+    lex polylabs/poly-git/lifecycle
+    precision A
+    observe metrics: [access_checks, access_denials]
+{
+    let acl = graph_query(vcs_repo_graph, "acl_for", repo_id, puller_id)
+    acl != null
+}

@@ -1,0 +1,33 @@
+/// telemetry.fl — VCS telemetry integration via polykit-telemetry
+/// lex polylabs/poly-git/integration
+
+import polykit_telemetry from "polykit-telemetry@^0.2.0"
+
+circuit emit_push_latency(latency_ms: u64)
+    lex polylabs/poly-git/integration
+    precision C
+{
+    polykit_telemetry::emit_gauge("vcs.push.latency_ms", latency_ms, "{}", "poly-git.push")
+}
+
+circuit emit_pull_latency(latency_ms: u64)
+    lex polylabs/poly-git/integration
+    precision C
+{
+    polykit_telemetry::emit_gauge("vcs.pull.latency_ms", latency_ms, "{}", "poly-git.pull")
+}
+
+circuit emit_push_event(repo_id: bytes(32), user_id: bytes(16), objects: u64)
+    lex polylabs/poly-git/integration
+    precision C
+{
+    polykit_telemetry::emit_event("vcs.push", concat(repo_id, ":", user_id, ":", objects))
+}
+
+circuit check_push_baseline(latency_ms: u64) -> bool
+    lex polylabs/poly-git/integration
+    precision B
+{
+    let check = polykit_telemetry::check_baseline("vcs.push.latency_ms", latency_ms)
+    check.within_baseline
+}

@@ -1,0 +1,100 @@
+/// rbac.fl — VCS RBAC graph (invest pattern)
+/// lex polylabs/poly-git/rbac
+///
+/// Pattern: toddrooke/invest/circuits/graphs/rbac.fl
+
+type VcsRole = enum {
+    Reader,
+    Writer,
+    Maintainer,
+    Admin,
+    Compliance,
+}
+
+graph vcs_rbac {
+    node Role            : VcsRoleNode
+    node Permission      : VcsPermissionNode
+    node Widget          : VcsWidgetNode
+
+    edge grants          : Role -> Permission
+    edge visible_to      : Widget -> Role
+
+    // Reader: clone, fetch, browse
+    grants Reader -> read_refs
+    grants Reader -> read_objects
+    grants Reader -> browse_repo
+
+    // Writer: push (non-protected branches)
+    grants Writer -> read_refs
+    grants Writer -> read_objects
+    grants Writer -> browse_repo
+    grants Writer -> push_objects
+    grants Writer -> update_refs
+
+    // Maintainer: push to all branches, manage branch policies
+    grants Maintainer -> read_refs
+    grants Maintainer -> read_objects
+    grants Maintainer -> browse_repo
+    grants Maintainer -> push_objects
+    grants Maintainer -> update_refs
+    grants Maintainer -> force_push
+    grants Maintainer -> manage_branch_policy
+
+    // Admin: full control
+    grants Admin -> read_refs
+    grants Admin -> read_objects
+    grants Admin -> browse_repo
+    grants Admin -> push_objects
+    grants Admin -> update_refs
+    grants Admin -> force_push
+    grants Admin -> manage_branch_policy
+    grants Admin -> manage_acl
+    grants Admin -> manage_repo_config
+    grants Admin -> delete_repo
+    grants Admin -> transfer_repo
+
+    // Compliance: read-only + audit trail
+    grants Compliance -> read_refs
+    grants Compliance -> read_objects
+    grants Compliance -> browse_repo
+    grants Compliance -> view_audit_trail
+    grants Compliance -> view_governance_log
+
+    // Widget visibility
+    visible_to push_activity_widget -> Reader
+    visible_to push_activity_widget -> Writer
+    visible_to push_activity_widget -> Maintainer
+    visible_to push_activity_widget -> Admin
+
+    visible_to acl_management_widget -> Admin
+    visible_to branch_policy_widget -> Maintainer
+    visible_to branch_policy_widget -> Admin
+
+    visible_to governance_audit_widget -> Compliance
+    visible_to governance_audit_widget -> Admin
+
+    visible_to health_dashboard_widget -> Admin
+    visible_to health_dashboard_widget -> Compliance
+
+    visible_to repo_config_widget -> Admin
+}
+
+data VcsRoleNode : vcs v1 {
+    name: bytes(32),
+    description: bytes(256),
+}
+    encode
+
+data VcsPermissionNode : vcs v1 {
+    name: bytes(64),
+    resource: bytes(128),
+    action: bytes(32),
+}
+    encode
+
+data VcsWidgetNode : vcs v1 {
+    widget_id: bytes(64),
+    title: bytes(128),
+    min_role: bytes(32),
+}
+    encode
