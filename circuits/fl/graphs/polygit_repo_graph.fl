@@ -1,0 +1,475 @@
+/// Poly Git Repo Graph — Repository registry with org/group hierarchy and anomaly detection
+/// Stratum graph storage + Cortex AI governance
+/// govern lex esn/global/org/polylabs/git
+
+import polygit_repository
+import polygit_commit
+
+// ── Data: Node types (data + store graph + cortex) ──────────────
+
+data RepoNode : app v1 {
+    repo_id: bytes(32),
+    name: string,
+    owner_id: bytes(32),
+    group_id: bytes(32),
+    default_branch: string,
+    scatter_k: u8,
+    scatter_n: u8,
+    created_at: u64,
+    classification: string,
+}
+    store graph
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data OrgNode : app v1 {
+    org_id: bytes(32),
+    name: string,
+    admin_id: bytes(32),
+    owner_pubkey: bytes(2592),
+    created_at: u64,
+    quota_storage: u64,
+    quota_repos: u32,
+}
+    store graph
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        obfuscate [admin_id]
+        infer on_write
+    }
+
+data GroupNode : app v1 {
+    group_id: bytes(32),
+    org_id: bytes(32),
+    name: string,
+    parent_group: bytes(32),
+    depth: u8,
+    created_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        infer on_write
+    }
+
+data ContributorNode : app v1 {
+    contributor_id: bytes(32),
+    user_id: bytes(32),
+    pubkey: bytes(2592),
+    display_name: string,
+    email: string,
+    joined_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        redact [email]
+        obfuscate [user_id]
+        infer on_write
+    }
+
+// ── Edge types ──────────────────────────────────────────────────
+
+type ContainsEdge = struct {
+    edge_id: bytes(16),
+    relation_type: u8,
+    created_at: u64,
+}
+
+type ContributesEdge = struct {
+    edge_id: bytes(16),
+    contributor_id: bytes(32),
+    repo_id: bytes(32),
+    role: u8,
+    first_commit_at: u64,
+    last_commit_at: u64,
+}
+
+type ForkEdge = struct {
+    edge_id: bytes(16),
+    source_repo: bytes(32),
+    forked_repo: bytes(32),
+    forked_at: u64,
+}
+
+// ── State machine ───────────────────────────────────────────────
+
+state_machine repo_lifecycle {
+    initial CREATED
+    persistence wal
+    terminal [DELETED]
+    li_anomaly_detection true
+
+    CREATED -> ACTIVE when first_push
+    ACTIVE -> ARCHIVED when archive_requested guard no_open_reviews
+    ACTIVE -> DELETED when delete_requested guard owner_confirmed
+    ARCHIVED -> ACTIVE when unarchive_requested guard owner_confirmed
+    ARCHIVED -> DELETED when delete_requested guard owner_confirmed and archive_age > 30d
+}
+
+// ── Graph definition ────────────────────────────────────────────
+
+graph repo_registry {
+    node RepoNode
+    node OrgNode
+    node GroupNode
+    node ContributorNode
+    edge ContainsEdge
+    edge ContributesEdge
+    edge ForkEdge
+
+    overlay commit_count: u64 bitmask delta_curate
+    overlay last_push_ns: u64 curate delta_curate
+    overlay size_bytes: u64 bitmask delta_curate
+    overlay contributor_count: u32 bitmask delta_curate
+    overlay classification: u8 curate delta_curate
+
+    storage csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    ai_feed repo_anomaly {
+        model cortex_eslm
+        features [push_frequency, size_growth_rate, contributor_churn, classification_changes]
+        anomaly_threshold 0.8
+    }
+
+    observe repo_registry: [commit_count, size_bytes, contributor_count] threshold: {
+        anomaly_score 0.8
+        baseline_window 3600
+    }
+}
+
+series repo_series: repo_registry
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream repo_graph_events: event<RepoNode>
+    retention 7y
+    consumers [governance, audit, streamsight]
+
+stream contributor_events: event<ContributorNode>
+    retention 7y
+    consumers [governance, audit]
+
+// ── Circuits: Node registration ─────────────────────────────────
+
+circuit register_org(graph_id: bytes(32), org: OrgNode) -> bytes(32)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    observe metrics: [orgs_registered, org_quota_storage]
+    monitor "org_registration_rate" { orgs_registered < 50 per 3600s }
+    invariant "org_name_nonempty" { len(org.name) > 0 }
+    invariant "owner_key_valid" { len(org.owner_pubkey) == 2592 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    eslite_insert("org_nodes", org.org_id, org)
+    org.org_id
+}
+
+circuit register_group(graph_id: bytes(32), group: GroupNode) -> bytes(32)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    observe metrics: [groups_registered, group_depth]
+    monitor "group_depth" { group_depth < 16 }
+    invariant "depth_limit" { group.depth < 16 }
+    invariant "org_exists" { eslite_exists("org_nodes", group.org_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    eslite_insert("group_nodes", group.group_id, group)
+    let edge_id = bit_slice(sha3_256(concat(group.org_id, group.group_id)), 0, 128)
+    let parent = if group.parent_group != zero_bytes(32) { group.parent_group } else { group.org_id }
+    let edge = ContainsEdge { edge_id: edge_id, relation_type: 1, created_at: now() }
+    eslite_insert("contains_edges", edge_id, { from: parent, to: group.group_id, edge: edge })
+    group.group_id
+}
+
+circuit register_repo(graph_id: bytes(32), repo: RepoNode) -> bytes(32)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    observe metrics: [repos_registered, scatter_policy]
+    monitor "repo_registration_rate" { repos_registered < 200 per 3600s }
+    invariant "group_exists" { eslite_exists("group_nodes", repo.group_id) }
+    invariant "scatter_valid" { repo.scatter_k >= 3 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    eslite_insert("repo_nodes", repo.repo_id, repo)
+    let edge_id = bit_slice(sha3_256(concat(repo.group_id, repo.repo_id)), 0, 128)
+    let edge = ContainsEdge { edge_id: edge_id, relation_type: 2, created_at: now() }
+    eslite_insert("contains_edges", edge_id, { from: repo.group_id, to: repo.repo_id, edge: edge })
+    emit(repo_graph_events, repo)
+    repo.repo_id
+}
+
+circuit register_contributor(graph_id: bytes(32), contributor: ContributorNode) -> bytes(32)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    observe metrics: [contributors_registered]
+    monitor "contributor_rate" { contributors_registered < 1000 per 3600s }
+    invariant "pubkey_valid" { len(contributor.pubkey) == 2592 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    eslite_insert("contributor_nodes", contributor.contributor_id, contributor)
+    emit(contributor_events, contributor)
+    contributor.contributor_id
+}
+
+// ── Circuits: Graph operations ──────────────────────────────────
+
+circuit record_contribution(graph_id: bytes(32), contributor_id: bytes(32), repo_id: bytes(32), commit_count: u64, bytes_pushed: u64) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    observe metrics: [contributions_recorded, commit_count_delta, size_delta]
+    monitor "push_frequency_anomaly" { contributions_recorded < 500 per 3600s }
+    invariant "contributor_exists" { eslite_exists("contributor_nodes", contributor_id) }
+    invariant "repo_exists" { eslite_exists("repo_nodes", repo_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let edge_key = concat(contributor_id, repo_id)
+    let existing = eslite_query("contributes_edges", edge_key)
+    if existing == null {
+        let edge_id = bit_slice(sha3_256(edge_key), 0, 128)
+        let edge = ContributesEdge { edge_id: edge_id, contributor_id: contributor_id, repo_id: repo_id, role: 0, first_commit_at: ts, last_commit_at: ts }
+        eslite_insert("contributes_edges", edge_key, edge)
+        overlay_delta(repo_registry, repo_id, "contributor_count", 1)
+    } else {
+        let updated = ContributesEdge { ..existing, last_commit_at: ts }
+        eslite_insert("contributes_edges", edge_key, updated)
+    }
+    overlay_delta(repo_registry, repo_id, "commit_count", commit_count)
+    overlay_delta(repo_registry, repo_id, "size_bytes", bytes_pushed)
+    overlay_set(repo_registry, repo_id, "last_push_ns", ts)
+    true
+}
+
+circuit record_fork(graph_id: bytes(32), source_repo: bytes(32), forked_repo: bytes(32)) -> bytes(16)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    observe metrics: [forks_recorded]
+    monitor "fork_rate" { forks_recorded < 100 per 3600s }
+    invariant "source_exists" { eslite_exists("repo_nodes", source_repo) }
+    invariant "fork_exists" { eslite_exists("repo_nodes", forked_repo) }
+    invariant "no_self_fork" { source_repo != forked_repo }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let edge_id = bit_slice(sha3_256(concat(source_repo, forked_repo)), 0, 128)
+    let edge = ForkEdge { edge_id: edge_id, source_repo: source_repo, forked_repo: forked_repo, forked_at: now() }
+    eslite_insert("fork_edges", edge_id, edge)
+    edge_id
+}
+
+// ── Circuits: Lifecycle ─────────────────────────────────────────
+
+circuit transition_repo_state(graph_id: bytes(32), repo_id: bytes(32), event: string, actor: bytes(32)) -> string
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    observe metrics: [state_transitions, transition_type]
+    monitor "lifecycle_anomalies" { state_transitions < 50 per 3600s }
+    invariant "repo_exists" { eslite_exists("repo_nodes", repo_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let current_state = eslite_query("repo_lifecycle_state", repo_id)
+    let new_state = match (current_state, event) {
+        ("CREATED", "first_push") => "ACTIVE",
+        ("ACTIVE", "archive_requested") => "ARCHIVED",
+        ("ACTIVE", "delete_requested") => "DELETED",
+        ("ARCHIVED", "unarchive_requested") => "ACTIVE",
+        ("ARCHIVED", "delete_requested") => "DELETED",
+        _ => current_state,
+    }
+    assert(new_state != current_state, "invalid state transition")
+    eslite_insert("repo_lifecycle_state", repo_id, new_state)
+    new_state
+}
+
+// ── Circuits: Query ─────────────────────────────────────────────
+
+circuit query_repos_by_org(graph_id: bytes(32), org_id: bytes(32)) -> list<RepoNode>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision B
+    observe metrics: [org_repo_queries, repos_returned]
+    monitor "query_volume" { org_repo_queries < 200 per 60s }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan]
+{
+    let groups = eslite_scan("group_nodes", org_id)
+    let repos = []
+    for group in groups {
+        let group_repos = eslite_scan("contains_edges", group.group_id)
+        for edge in group_repos {
+            if edge.edge.relation_type == 2 {
+                let repo = eslite_query("repo_nodes", edge.to)
+                repos.push(repo)
+            }
+        }
+    }
+    repos
+}
+
+circuit detect_push_anomalies(graph_id: bytes(32), repo_id: bytes(32), window_s: u64) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision C
+    povc true
+    ai_feed repo_anomaly
+    observe metrics: [anomaly_checks, anomalies_detected]
+    monitor "anomaly_detection" { anomalies_detected < 20 per 3600s }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, now]
+{
+    let ts = now()
+    let last_push = overlay_get(repo_registry, repo_id, "last_push_ns")
+    let commit_count = overlay_get(repo_registry, repo_id, "commit_count")
+    let size_bytes = overlay_get(repo_registry, repo_id, "size_bytes")
+    let baseline = eslite_query("repo_baselines", repo_id)
+    if baseline == null { return false }
+    let push_rate = (commit_count - baseline.commit_count) / window_s
+    let size_rate = (size_bytes - baseline.size_bytes) / window_s
+    let anomaly = push_rate > baseline.avg_push_rate * 5 or size_rate > baseline.avg_size_rate * 10
+    anomaly
+}
+
+circuit get_contributor_stats(graph_id: bytes(32), repo_id: bytes(32)) -> list<ContributesEdge>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git
+    status production
+    precision B
+    observe metrics: [contributor_stat_queries]
+    monitor "contributor_query_volume" { contributor_stat_queries < 200 per 60s }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan]
+{
+    eslite_scan("contributes_edges", repo_id)
+}
+
+// ── Test / KAT annotations ──────────────────────────────────────
+
+test golden "register_repo_basic" {
+    setup {
+        let org_id = hex("aa" * 32)
+        eslite_insert("org_nodes", org_id, OrgNode {
+            org_id: org_id,
+            name: "test-org",
+            admin_id: hex("bb" * 32),
+            owner_pubkey: hex("cc" * 2592),
+            created_at: 1000,
+            quota_storage: 1073741824,
+            quota_repos: 100,
+        })
+        let group_id = hex("dd" * 32)
+        eslite_insert("group_nodes", group_id, GroupNode {
+            group_id: group_id,
+            org_id: org_id,
+            name: "backend",
+            parent_group: hex("00" * 32),
+            depth: 1,
+            created_at: 1000,
+        })
+    }
+    input {
+        graph_id: hex("00" * 32)
+        repo: RepoNode {
+            repo_id: hex("ee" * 32),
+            name: "my-service",
+            owner_id: hex("bb" * 32),
+            group_id: hex("dd" * 32),
+            default_branch: "main",
+            scatter_k: 3,
+            scatter_n: 5,
+            created_at: 2000,
+            classification: "internal",
+        }
+    }
+    assert {
+        result == hex("ee" * 32)
+    }
+}
+
+test golden "record_contribution_basic" {
+    setup {
+        eslite_insert("contributor_nodes", hex("ff" * 32), ContributorNode {
+            contributor_id: hex("ff" * 32),
+            user_id: hex("aa" * 32),
+            pubkey: hex("bb" * 2592),
+            display_name: "alice",
+            email: "alice@example.com",
+            joined_at: 1000,
+        })
+        eslite_insert("repo_nodes", hex("ee" * 32), RepoNode {
+            repo_id: hex("ee" * 32),
+            name: "my-service",
+            owner_id: hex("bb" * 32),
+            group_id: hex("dd" * 32),
+            default_branch: "main",
+            scatter_k: 3,
+            scatter_n: 5,
+            created_at: 2000,
+            classification: "internal",
+        })
+    }
+    input {
+        graph_id: hex("00" * 32)
+        contributor_id: hex("ff" * 32)
+        repo_id: hex("ee" * 32)
+        commit_count: 5
+        bytes_pushed: 10240
+    }
+    assert {
+        result == true
+    }
+}
+
+kat_vector "sha3_256_empty_graph" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "sha3_256_edge_id_derivation" {
+    function: "sha3_256"
+    input: concat(hex("dd" * 32), hex("ee" * 32))
+    expected_property: {
+        len(bit_slice(result, 0, 128)) == 16
+    }
+}

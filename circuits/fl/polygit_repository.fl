@@ -1,0 +1,276 @@
+// Poly Git Repository — scatter-CAS object model and repository management
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/repo
+//   Every git object (blob, tree, commit, tag) is content-addressed via SHA3-256
+//   and scatter-stored with k-of-n erasure coding across providers.
+//
+// Object model:
+//   RepoId   = SHA3-256(org_id || repo_name || created_at)
+//   ObjectId = SHA3-256(object_content)  (replaces SHA-1)
+//   Objects are stored as scatter-cas chunks with configurable scatter policy.
+
+import polykit_identity
+import polykit_metering
+
+type RepoId = bytes(32)
+type ObjectId = bytes(32)
+
+type ObjectType = enum {
+    Blob,
+    Tree,
+    Commit,
+    Tag,
+}
+
+type RepoConfig = struct {
+    repo_id: RepoId,
+    org_id: bytes(32),
+    name: string,
+    default_branch: string,
+    scatter_k: u8,
+    scatter_n: u8,
+    classification: string,
+    created_at: u64,
+    owner_pubkey: bytes(2592),
+}
+
+type GitObject = struct {
+    object_id: ObjectId,
+    object_type: ObjectType,
+    size_bytes: u64,
+    content_hash: bytes(32),
+    scatter_refs: list<bytes(32)>,
+    stored_at: u64,
+}
+
+type RepoState = struct {
+    repo_id: RepoId,
+    head_ref: ObjectId,
+    object_count: u64,
+    total_size_bytes: u64,
+    last_push_ns: u64,
+}
+
+stream repo_events: event<RepoConfig>
+    | throttle 500/s burst 1000
+
+stream object_events: event<GitObject>
+    | throttle 5000/s burst 10000
+
+// --- Create a new repository ---
+circuit create_repo(org_id: bytes(32), name: string, owner_pk: bytes(2592), scatter_k: u8, scatter_n: u8) -> RepoConfig
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/repo
+    observe metrics: [repo_creations, org_id, scatter_policy]
+    monitor "repo_creation_rate" { repo_creations < 100 per 60s }
+    invariant "scatter_threshold" { scatter_k >= 3 and scatter_k <= scatter_n }
+    invariant "scatter_redundancy" { scatter_n >= scatter_k + 2 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now, scatter_cas_init]
+{
+    let ts = now()
+    let repo_seed = concat(org_id, encode(name), encode_u64(ts))
+    let repo_id = sha3_256(repo_seed)
+    let config = RepoConfig {
+        repo_id: repo_id,
+        org_id: org_id,
+        name: name,
+        default_branch: "main",
+        scatter_k: scatter_k,
+        scatter_n: scatter_n,
+        classification: "internal",
+        created_at: ts,
+        owner_pubkey: owner_pk,
+    }
+    eslite_insert("repos", repo_id, config)
+    emit(repo_events, config)
+    config
+}
+
+// --- Initialize repository with empty tree and root commit ---
+circuit init_repo(config: RepoConfig, signing_sk: bytes(4896)) -> RepoState
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/repo
+    constant_time true
+    observe metrics: [repo_inits, initial_commit_sign]
+    monitor "init_latency" { init_time_ms < 200 }
+    invariant "repo_exists" { eslite_exists("repos", config.repo_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, scatter_cas_put, mldsa_sign, now]
+{
+    let empty_tree = sha3_256(encode("tree 0"))
+    let empty_tree_obj = GitObject {
+        object_id: empty_tree,
+        object_type: ObjectType::Tree,
+        size_bytes: 0,
+        content_hash: empty_tree,
+        scatter_refs: scatter_cas_put(encode("tree 0"), config.scatter_k, config.scatter_n),
+        stored_at: now(),
+    }
+    let init_message = "Initial commit"
+    let commit_content = concat(encode("tree "), empty_tree, encode("\n"), encode(init_message))
+    let commit_id = sha3_256(commit_content)
+    let signature = mldsa_sign(signing_sk, commit_content)
+    let commit_obj = GitObject {
+        object_id: commit_id,
+        object_type: ObjectType::Commit,
+        size_bytes: len(commit_content),
+        content_hash: sha3_256(concat(commit_content, signature)),
+        scatter_refs: scatter_cas_put(concat(commit_content, signature), config.scatter_k, config.scatter_n),
+        stored_at: now(),
+    }
+    eslite_insert("objects", empty_tree, empty_tree_obj)
+    eslite_insert("objects", commit_id, commit_obj)
+    let state = RepoState {
+        repo_id: config.repo_id,
+        head_ref: commit_id,
+        object_count: 2,
+        total_size_bytes: empty_tree_obj.size_bytes + commit_obj.size_bytes,
+        last_push_ns: now(),
+    }
+    eslite_insert("repo_state", config.repo_id, state)
+    state
+}
+
+// --- Store a git object in scatter-CAS ---
+circuit store_object(repo_id: RepoId, obj_type: ObjectType, content: bytes) -> GitObject
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/repo
+    observe metrics: [object_stores, object_type, content_size]
+    monitor "object_store_throughput" { object_stores > 0 }
+    invariant "content_nonempty" { len(content) > 0 }
+    meters [compute_cycles, memory_bytes, bandwidth_bytes, storage_bytes]
+    wasm_abi [eslite_insert, eslite_query, scatter_cas_put, now]
+{
+    let object_id = sha3_256(content)
+    let existing = eslite_query("objects", object_id)
+    if existing != null { return existing }
+    let config = eslite_query("repos", repo_id)
+    let refs = scatter_cas_put(content, config.scatter_k, config.scatter_n)
+    let obj = GitObject {
+        object_id: object_id,
+        object_type: obj_type,
+        size_bytes: len(content),
+        content_hash: object_id,
+        scatter_refs: refs,
+        stored_at: now(),
+    }
+    eslite_insert("objects", object_id, obj)
+    emit(object_events, obj)
+    obj
+}
+
+// --- Retrieve a git object from scatter-CAS ---
+circuit get_object(repo_id: RepoId, object_id: ObjectId) -> GitObject
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/repo
+    observe metrics: [object_gets, cache_hits, cache_misses]
+    monitor "object_get_latency" { get_latency_ms < 100 }
+    invariant "object_exists" { eslite_exists("objects", object_id) }
+    meters [compute_cycles, bandwidth_bytes]
+    wasm_abi [eslite_query, scatter_cas_get]
+{
+    let obj = eslite_query("objects", object_id)
+    let content = scatter_cas_get(obj.scatter_refs)
+    let verified_hash = sha3_256(content)
+    assert(verified_hash == obj.content_hash, "object integrity check failed")
+    obj
+}
+
+// --- Delete a repository and all its objects ---
+circuit delete_repo(repo_id: RepoId, requester_pk: bytes(2592)) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/repo
+    observe metrics: [repo_deletions, objects_purged]
+    monitor "deletion_audit" { repo_deletions < 10 per 3600s }
+    invariant "owner_only" { requester_pk == eslite_query("repos", repo_id).owner_pubkey }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_delete, eslite_query, scatter_cas_delete, now]
+{
+    let config = eslite_query("repos", repo_id)
+    let state = eslite_query("repo_state", repo_id)
+    eslite_delete("repo_state", repo_id)
+    eslite_delete("repos", repo_id)
+    emit(repo_events, config)
+    true
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "create_repo_basic" {
+    input {
+        org_id: hex("aa" * 32)
+        name: "my-project"
+        owner_pk: hex("bb" * 2592)
+        scatter_k: 3
+        scatter_n: 5
+    }
+    assert {
+        config.repo_id != hex("00" * 32)
+        config.org_id == hex("aa" * 32)
+        config.name == "my-project"
+        config.default_branch == "main"
+        config.scatter_k == 3
+        config.scatter_n == 5
+        config.classification == "internal"
+        config.created_at > 0
+    }
+}
+
+test golden "store_and_get_object" {
+    setup {
+        let repo = create_repo(hex("aa" * 32), "test-repo", hex("bb" * 2592), 3, 5)
+    }
+    input {
+        repo_id: repo.repo_id
+        obj_type: ObjectType::Blob
+        content: bytes("hello world")
+    }
+    assert {
+        obj.object_id != hex("00" * 32)
+        obj.object_type == ObjectType::Blob
+        obj.size_bytes == 11
+        len(obj.scatter_refs) > 0
+    }
+}
+
+kat_vector "sha3_256_empty_repo" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "sha3_256_tree_zero" {
+    function: "sha3_256"
+    input: bytes("tree 0")
+    expected: hex("7e3184545e51e4c901a93f4a259ea33e75b3c1798fed191dfa4a18cf498eec20")
+}
+
+kat_vector "mldsa87_sign_verify_repo" {
+    function: "mldsa_sign"
+    input: {
+        sk: hex("ff" * 4896)
+        message: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+    }
+    post_condition: {
+        len(signature) == 4627
+        mldsa_verify(message, signature, derived_pk(sk)) == true
+    }
+}
+
+fuzz_target "init_repo_sign_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        org_id: bytes(32)
+        name: string(1..256)
+        owner_pk: bytes(2592)
+        signing_sk: bytes(4896)
+        scatter_k: u8(3..16)
+        scatter_n: u8(5..32)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

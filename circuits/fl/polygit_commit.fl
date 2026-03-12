@@ -1,0 +1,309 @@
+// Poly Git Commit — PQ-signed commit and tree operations
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/commit
+//   Every commit is signed with ML-DSA-87 (FIPS 204, Level 5).
+//   Tree diffing uses SHA3-256 content-addressed entries.
+//
+// Signing flow:
+//   1. Build canonical commit content (tree_hash, parents, author, message)
+//   2. SHA3-256 hash the canonical content
+//   3. ML-DSA-87 sign the hash with committer's SPARK-derived key
+//   4. Signature embedded in CommitNode, verifiable by any peer
+
+import polykit_identity
+import polygit_repository
+
+type CommitNode = struct {
+    commit_id: ObjectId,
+    tree_hash: ObjectId,
+    parent_hashes: list<ObjectId>,
+    author: bytes(32),
+    author_pubkey: bytes(2592),
+    committer: bytes(32),
+    committer_pubkey: bytes(2592),
+    message: string,
+    signature: bytes(4627),
+    timestamp_ns: u64,
+}
+
+type TreeEntry = struct {
+    name: string,
+    mode: u32,
+    object_id: ObjectId,
+    object_type: ObjectType,
+    size_bytes: u64,
+}
+
+type TreeNode = struct {
+    tree_id: ObjectId,
+    entries: list<TreeEntry>,
+    entry_count: u32,
+}
+
+type BlobRef = struct {
+    blob_id: ObjectId,
+    path: string,
+    size_bytes: u64,
+    content_hash: bytes(32),
+}
+
+type DiffEntry = struct {
+    path: string,
+    old_object: ObjectId,
+    new_object: ObjectId,
+    change_type: u8,
+    additions: u32,
+    deletions: u32,
+}
+
+type DiffResult = struct {
+    base_tree: ObjectId,
+    target_tree: ObjectId,
+    entries: list<DiffEntry>,
+    files_changed: u32,
+    total_additions: u32,
+    total_deletions: u32,
+}
+
+stream commit_events: event<CommitNode>
+    | throttle 2000/s burst 5000
+
+// --- Create and sign a commit with ML-DSA-87 ---
+circuit create_commit(
+    repo_id: RepoId,
+    tree_hash: ObjectId,
+    parent_hashes: list<ObjectId>,
+    author: bytes(32),
+    author_pubkey: bytes(2592),
+    committer: bytes(32),
+    committer_pubkey: bytes(2592),
+    signing_sk: bytes(4896),
+    message: string
+) -> CommitNode
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/commit
+    constant_time true
+    observe metrics: [commits_created, signing_ops, parent_count]
+    monitor "commit_signing_latency" { signing_time_ms < 100 }
+    invariant "tree_exists" { eslite_exists("objects", tree_hash) }
+    invariant "parents_exist" { all(parent_hashes, |p| eslite_exists("objects", p)) }
+    invariant "message_nonempty" { len(message) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, scatter_cas_put, mldsa_sign, now]
+{
+    let ts = now()
+    let canonical = concat(
+        encode("tree "), tree_hash, encode("\n"),
+        encode_parents(parent_hashes),
+        encode("author "), author, encode(" "), encode_u64(ts), encode("\n"),
+        encode("committer "), committer, encode(" "), encode_u64(ts), encode("\n"),
+        encode("\n"),
+        encode(message)
+    )
+    let commit_hash = sha3_256(canonical)
+    let signature = mldsa_sign(signing_sk, commit_hash)
+    let commit_id = sha3_256(concat(canonical, signature))
+    let node = CommitNode {
+        commit_id: commit_id,
+        tree_hash: tree_hash,
+        parent_hashes: parent_hashes,
+        author: author,
+        author_pubkey: author_pubkey,
+        committer: committer,
+        committer_pubkey: committer_pubkey,
+        message: message,
+        signature: signature,
+        timestamp_ns: ts,
+    }
+    let config = eslite_query("repos", repo_id)
+    let signed_content = concat(canonical, signature)
+    scatter_cas_put(signed_content, config.scatter_k, config.scatter_n)
+    eslite_insert("commits", commit_id, node)
+    emit(commit_events, node)
+    node
+}
+
+// --- Verify ML-DSA-87 signature on a commit ---
+circuit verify_commit(commit: CommitNode) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/commit
+    observe metrics: [verify_ops, verify_failures, verify_successes]
+    monitor "verification_failures" { verify_failures < 5 per 60s }
+    invariant "signature_present" { len(commit.signature) == 4627 }
+    meters [compute_cycles]
+    wasm_abi [mldsa_verify]
+{
+    let canonical = concat(
+        encode("tree "), commit.tree_hash, encode("\n"),
+        encode_parents(commit.parent_hashes),
+        encode("author "), commit.author, encode(" "), encode_u64(commit.timestamp_ns), encode("\n"),
+        encode("committer "), commit.committer, encode(" "), encode_u64(commit.timestamp_ns), encode("\n"),
+        encode("\n"),
+        encode(commit.message)
+    )
+    let commit_hash = sha3_256(canonical)
+    mldsa_verify(commit_hash, commit.signature, commit.committer_pubkey)
+}
+
+// --- Build a tree from entries and store to scatter-CAS ---
+circuit build_tree(repo_id: RepoId, entries: list<TreeEntry>) -> TreeNode
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/commit
+    observe metrics: [trees_built, entry_count]
+    monitor "tree_size" { entry_count < 100000 }
+    invariant "entries_sorted" { is_sorted(entries, |a, b| a.name < b.name) }
+    meters [compute_cycles, memory_bytes, storage_bytes]
+    wasm_abi [eslite_insert, scatter_cas_put, eslite_query]
+{
+    let sorted = sort(entries, |a, b| a.name < b.name)
+    let content = encode_tree_entries(sorted)
+    let tree_id = sha3_256(content)
+    let config = eslite_query("repos", repo_id)
+    scatter_cas_put(content, config.scatter_k, config.scatter_n)
+    let node = TreeNode {
+        tree_id: tree_id,
+        entries: sorted,
+        entry_count: len(sorted),
+    }
+    eslite_insert("objects", tree_id, node)
+    node
+}
+
+// --- Diff two trees ---
+circuit diff_trees(repo_id: RepoId, base_tree: ObjectId, target_tree: ObjectId) -> DiffResult
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/commit
+    observe metrics: [diffs_computed, files_changed, total_additions, total_deletions]
+    monitor "diff_size" { files_changed < 10000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, scatter_cas_get]
+{
+    let base = eslite_query("objects", base_tree)
+    let target = eslite_query("objects", target_tree)
+    let base_map = index_by_name(base.entries)
+    let target_map = index_by_name(target.entries)
+    let diff_entries = []
+    let additions = 0
+    let deletions = 0
+    for entry in target.entries {
+        let old = base_map.get(entry.name)
+        if old == null {
+            diff_entries.push(DiffEntry { path: entry.name, old_object: zero_bytes(32), new_object: entry.object_id, change_type: 1, additions: entry.size_bytes, deletions: 0 })
+            additions = additions + entry.size_bytes
+        } else if old.object_id != entry.object_id {
+            diff_entries.push(DiffEntry { path: entry.name, old_object: old.object_id, new_object: entry.object_id, change_type: 2, additions: entry.size_bytes, deletions: old.size_bytes })
+            additions = additions + entry.size_bytes
+            deletions = deletions + old.size_bytes
+        }
+    }
+    for entry in base.entries {
+        if target_map.get(entry.name) == null {
+            diff_entries.push(DiffEntry { path: entry.name, old_object: entry.object_id, new_object: zero_bytes(32), change_type: 3, additions: 0, deletions: entry.size_bytes })
+            deletions = deletions + entry.size_bytes
+        }
+    }
+    DiffResult {
+        base_tree: base_tree,
+        target_tree: target_tree,
+        entries: diff_entries,
+        files_changed: len(diff_entries),
+        total_additions: additions,
+        total_deletions: deletions,
+    }
+}
+
+// --- Resolve a ref name to an ObjectId ---
+circuit resolve_ref(repo_id: RepoId, ref_name: string) -> ObjectId
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/commit
+    observe metrics: [ref_lookups, ref_misses]
+    monitor "ref_resolution" { ref_misses < 10 per 60s }
+    invariant "ref_nonempty" { len(ref_name) > 0 }
+    meters [compute_cycles]
+    wasm_abi [eslite_query]
+{
+    let ref_key = concat(repo_id, encode("/refs/"), encode(ref_name))
+    let target = eslite_query("refs", ref_key)
+    assert(target != null, "ref not found")
+    target
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "create_commit_basic" {
+    input {
+        repo_id: hex("aa" * 32)
+        tree_hash: hex("bb" * 32)
+        parent_hashes: [hex("cc" * 32)]
+        author: hex("dd" * 32)
+        author_pubkey: hex("ee" * 2592)
+        committer: hex("dd" * 32)
+        committer_pubkey: hex("ee" * 2592)
+        signing_sk: hex("ff" * 4896)
+        message: "Initial commit"
+    }
+    assert {
+        commit.commit_id != hex("00" * 32)
+        commit.tree_hash == hex("bb" * 32)
+        commit.author == hex("dd" * 32)
+        commit.message == "Initial commit"
+        len(commit.signature) == 4627
+        commit.timestamp_ns > 0
+    }
+}
+
+test golden "verify_commit_valid" {
+    setup {
+        let commit = create_commit(
+            hex("aa" * 32), hex("bb" * 32), [hex("cc" * 32)],
+            hex("dd" * 32), hex("ee" * 2592),
+            hex("dd" * 32), hex("ee" * 2592),
+            hex("ff" * 4896), "test commit"
+        )
+    }
+    assert {
+        verify_commit(commit) == true
+    }
+}
+
+kat_vector "sha3_256_empty" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "sha3_256_abc" {
+    function: "sha3_256"
+    input: bytes("abc")
+    expected: hex("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+}
+
+kat_vector "mldsa87_sign_verify_commit" {
+    function: "mldsa_sign"
+    input: {
+        sk: hex("ff" * 4896)
+        message: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+    }
+    post_condition: {
+        len(signature) == 4627
+        mldsa_verify(message, signature, derived_pk(sk)) == true
+    }
+}
+
+fuzz_target "commit_sign_fuzz" {
+    inputs {
+        tree_hash: bytes(32)
+        parent_hashes: list<bytes(32)>(0..16)
+        author: bytes(32)
+        author_pubkey: bytes(2592)
+        committer: bytes(32)
+        committer_pubkey: bytes(2592)
+        signing_sk: bytes(4896)
+        message: string(1..65536)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

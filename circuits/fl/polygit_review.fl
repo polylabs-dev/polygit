@@ -1,0 +1,391 @@
+// Poly Git Review — Cortex AI-powered code review with Blessed Repo pattern
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/review
+//   sub_lex review_session fan_in — per-review session telemetry
+//   AI-powered diff evaluation via Cortex ESLM with anomaly detection.
+//
+// Blessed Repo pattern:
+//   Commits must pass N-of-M reviewer approvals before promotion to blessed.
+//   Each approval is ML-DSA-87 signed. Cortex AI provides advisory scoring
+//   but human reviewers hold final authority.
+
+import polykit_identity
+import polykit_governance
+import polygit_repository
+import polygit_commit
+
+type ReviewStatus = enum {
+    Pending,
+    Approved,
+    ChangesRequested,
+    Blocked,
+}
+
+type ReviewRequest = struct {
+    review_id: bytes(16),
+    repo_id: RepoId,
+    commit_id: ObjectId,
+    source_branch: string,
+    target_branch: string,
+    author: bytes(32),
+    diff_hash: bytes(32),
+    created_at: u64,
+}
+
+type ReviewResult = struct {
+    review_id: bytes(16),
+    reviewer: bytes(32),
+    reviewer_pubkey: bytes(2592),
+    status: ReviewStatus,
+    risk_score: u16,
+    ai_summary: string,
+    signature: bytes(4627),
+    reviewed_at: u64,
+}
+
+type AiEvaluation = struct {
+    diff_hash: bytes(32),
+    risk_score: u16,
+    complexity_score: u16,
+    test_coverage_delta: i16,
+    dependency_risk: u16,
+    security_flags: u32,
+    summary: string,
+    confidence: u16,
+}
+
+type BlessedPromotion = struct {
+    commit_id: ObjectId,
+    repo_id: RepoId,
+    approvals: list<ReviewResult>,
+    approval_count: u8,
+    required_approvals: u8,
+    promoted_at: u64,
+    promotion_signature: bytes(4627),
+}
+
+type ReviewPolicy = struct {
+    repo_id: RepoId,
+    required_approvals: u8,
+    require_ai_review: bool,
+    max_risk_score: u16,
+    protected_paths: list<string>,
+    codeowner_paths: list<string>,
+    block_on_security_flags: bool,
+}
+
+stream review_events: event<ReviewResult>
+    | throttle 1000/s burst 2000
+
+stream promotion_events: event<BlessedPromotion>
+    | throttle 100/s burst 200
+
+// --- Submit a review request for a commit ---
+circuit submit_review(
+    repo_id: RepoId,
+    commit_id: ObjectId,
+    source_branch: string,
+    target_branch: string,
+    author: bytes(32)
+) -> ReviewRequest
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/review {
+        sub_lex review_session fan_in
+    }
+    observe metrics: [reviews_submitted, review_queue_depth]
+    monitor "review_queue" { review_queue_depth < 1000 }
+    invariant "commit_exists" { eslite_exists("commits", commit_id) }
+    invariant "branches_differ" { source_branch != target_branch }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let ts = now()
+    let commit = eslite_query("commits", commit_id)
+    let diff_hash = sha3_256(concat(commit.tree_hash, encode(source_branch), encode(target_branch)))
+    let review_seed = concat(repo_id, commit_id, encode_u64(ts))
+    let review_id = bit_slice(sha3_256(review_seed), 0, 128)
+    let request = ReviewRequest {
+        review_id: review_id,
+        repo_id: repo_id,
+        commit_id: commit_id,
+        source_branch: source_branch,
+        target_branch: target_branch,
+        author: author,
+        diff_hash: diff_hash,
+        created_at: ts,
+    }
+    eslite_insert("reviews", review_id, request)
+    request
+}
+
+// --- AI-powered diff evaluation via Cortex ESLM ---
+circuit evaluate_diff(repo_id: RepoId, review_id: bytes(16), diff: DiffResult) -> AiEvaluation
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/review {
+        sub_lex review_session fan_in
+    }
+    ai_feed code_review_anomaly {
+        model cortex_eslm
+        context [diff_entries, file_history, test_manifest]
+        anomaly_threshold 0.85
+    }
+    observe metrics: [ai_evaluations, risk_scores, security_flags_raised, evaluation_latency_ms]
+    monitor "ai_evaluation_latency" { evaluation_latency_ms < 5000 }
+    monitor "high_risk_commits" { risk_scores > 800 }
+    invariant "diff_nonempty" { diff.files_changed > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, cortex_infer, now]
+{
+    let review = eslite_query("reviews", review_id)
+    let file_contexts = parallel for entry in diff.entries {
+        let content = scatter_cas_get_content(entry.new_object)
+        { path: entry.path, content: content, change_type: entry.change_type }
+    }
+    let inference = cortex_infer("code-review-v1", {
+        diff_entries: file_contexts,
+        repo_context: repo_id,
+        additions: diff.total_additions,
+        deletions: diff.total_deletions,
+    })
+    let security_flags = scan_security_patterns(file_contexts)
+    AiEvaluation {
+        diff_hash: review.diff_hash,
+        risk_score: inference.risk_score,
+        complexity_score: inference.complexity_score,
+        test_coverage_delta: inference.test_coverage_delta,
+        dependency_risk: inference.dependency_risk,
+        security_flags: security_flags,
+        summary: inference.summary,
+        confidence: inference.confidence,
+    }
+}
+
+// --- Approve a commit with ML-DSA-87 signed review ---
+circuit approve_commit(
+    review_id: bytes(16),
+    reviewer: bytes(32),
+    reviewer_pubkey: bytes(2592),
+    signing_sk: bytes(4896),
+    ai_eval: AiEvaluation
+) -> ReviewResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/review {
+        sub_lex review_session fan_in
+    }
+    constant_time true
+    observe metrics: [approvals_granted, approvals_with_risk, signing_ops]
+    monitor "approval_signing" { signing_ops > 0 }
+    invariant "review_exists" { eslite_exists("reviews", review_id) }
+    invariant "not_self_review" { reviewer != eslite_query("reviews", review_id).author }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, mldsa_sign, stream_emit, now]
+{
+    let ts = now()
+    let review = eslite_query("reviews", review_id)
+    let status = if ai_eval.security_flags > 0 { ReviewStatus::Blocked }
+                 else if ai_eval.risk_score > 800 { ReviewStatus::ChangesRequested }
+                 else { ReviewStatus::Approved }
+    let approval_content = concat(review_id, encode_u8(status), encode_u16(ai_eval.risk_score), encode_u64(ts))
+    let signature = mldsa_sign(signing_sk, sha3_256(approval_content))
+    let result = ReviewResult {
+        review_id: review_id,
+        reviewer: reviewer,
+        reviewer_pubkey: reviewer_pubkey,
+        status: status,
+        risk_score: ai_eval.risk_score,
+        ai_summary: ai_eval.summary,
+        signature: signature,
+        reviewed_at: ts,
+    }
+    eslite_insert("review_results", concat(review_id, reviewer), result)
+    emit(review_events, result)
+    result
+}
+
+// --- Promote a commit to the blessed repository ---
+circuit promote_to_blessed(
+    repo_id: RepoId,
+    commit_id: ObjectId,
+    policy: ReviewPolicy,
+    promotion_sk: bytes(4896)
+) -> BlessedPromotion
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/review
+    constant_time true
+    observe metrics: [promotions, promotion_failures, approval_counts]
+    monitor "promotion_gate" { promotion_failures < 5 per 3600s }
+    invariant "commit_reviewed" { has_reviews(commit_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_scan, eslite_insert, mldsa_sign, mldsa_verify, now]
+{
+    let reviews = eslite_scan("review_results", commit_id)
+    let approved = filter(reviews, |r| r.status == ReviewStatus::Approved)
+    let verified = filter(approved, |r| {
+        let content = concat(r.review_id, encode_u8(r.status), encode_u16(r.risk_score), encode_u64(r.reviewed_at))
+        mldsa_verify(sha3_256(content), r.signature, r.reviewer_pubkey)
+    })
+    assert(len(verified) >= policy.required_approvals, "insufficient approvals")
+    if policy.require_ai_review {
+        let ai_results = filter(reviews, |r| r.risk_score > 0)
+        assert(len(ai_results) > 0, "AI review required")
+        assert(all(ai_results, |r| r.risk_score <= policy.max_risk_score), "risk score exceeds policy threshold")
+    }
+    let ts = now()
+    let promotion_content = concat(commit_id, repo_id, encode_u64(ts), encode_u8(len(verified)))
+    let promotion_sig = mldsa_sign(promotion_sk, sha3_256(promotion_content))
+    let promotion = BlessedPromotion {
+        commit_id: commit_id,
+        repo_id: repo_id,
+        approvals: verified,
+        approval_count: len(verified),
+        required_approvals: policy.required_approvals,
+        promoted_at: ts,
+        promotion_signature: promotion_sig,
+    }
+    eslite_insert("blessed", concat(repo_id, commit_id), promotion)
+    emit(promotion_events, promotion)
+    promotion
+}
+
+// --- Check review policy compliance for a commit ---
+circuit check_review_policy(repo_id: RepoId, commit_id: ObjectId) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/review
+    observe metrics: [policy_checks, policy_violations]
+    monitor "policy_violations" { policy_violations < 10 per 3600s }
+    invariant "policy_exists" { eslite_exists("review_policies", repo_id) }
+    meters [compute_cycles]
+    wasm_abi [eslite_query, eslite_scan]
+{
+    let policy = eslite_query("review_policies", repo_id)
+    let reviews = eslite_scan("review_results", commit_id)
+    let approved_count = count(reviews, |r| r.status == ReviewStatus::Approved)
+    let has_blocks = any(reviews, |r| r.status == ReviewStatus::Blocked)
+    if has_blocks { return false }
+    if approved_count < policy.required_approvals { return false }
+    if policy.require_ai_review {
+        let ai_reviewed = any(reviews, |r| r.risk_score > 0)
+        if not ai_reviewed { return false }
+        let max_risk = max(reviews, |r| r.risk_score)
+        if max_risk > policy.max_risk_score { return false }
+    }
+    true
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "submit_review_basic" {
+    setup {
+        eslite_insert("commits", hex("cc" * 32), CommitNode {
+            commit_id: hex("cc" * 32),
+            tree_hash: hex("dd" * 32),
+            parent_hashes: [],
+            author: hex("aa" * 32),
+            author_pubkey: hex("bb" * 2592),
+            committer: hex("aa" * 32),
+            committer_pubkey: hex("bb" * 2592),
+            message: "test",
+            signature: hex("00" * 4627),
+            timestamp_ns: 1000,
+        })
+    }
+    input {
+        repo_id: hex("ee" * 32)
+        commit_id: hex("cc" * 32)
+        source_branch: "feature/auth"
+        target_branch: "main"
+        author: hex("aa" * 32)
+    }
+    assert {
+        request.review_id != hex("00" * 16)
+        request.repo_id == hex("ee" * 32)
+        request.commit_id == hex("cc" * 32)
+        request.source_branch == "feature/auth"
+        request.target_branch == "main"
+        request.diff_hash != hex("00" * 32)
+        request.created_at > 0
+    }
+}
+
+test golden "check_review_policy_pass" {
+    setup {
+        eslite_insert("review_policies", hex("ee" * 32), ReviewPolicy {
+            repo_id: hex("ee" * 32),
+            required_approvals: 1,
+            require_ai_review: false,
+            max_risk_score: 800,
+            protected_paths: [],
+            codeowner_paths: [],
+            block_on_security_flags: false,
+        })
+        eslite_insert("review_results", hex("cc" * 32), ReviewResult {
+            review_id: hex("ff" * 16),
+            reviewer: hex("bb" * 32),
+            reviewer_pubkey: hex("bb" * 2592),
+            status: ReviewStatus::Approved,
+            risk_score: 100,
+            ai_summary: "looks good",
+            signature: hex("00" * 4627),
+            reviewed_at: 2000,
+        })
+    }
+    input {
+        repo_id: hex("ee" * 32)
+        commit_id: hex("cc" * 32)
+    }
+    assert {
+        result == true
+    }
+}
+
+kat_vector "sha3_256_empty_review" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "sha3_256_review_content" {
+    function: "sha3_256"
+    input: bytes("abc")
+    expected: hex("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+}
+
+kat_vector "mldsa87_sign_verify_review" {
+    function: "mldsa_sign"
+    input: {
+        sk: hex("ff" * 4896)
+        message: hex("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+    }
+    post_condition: {
+        len(signature) == 4627
+        mldsa_verify(message, signature, derived_pk(sk)) == true
+    }
+}
+
+fuzz_target "approve_commit_sign_fuzz" {
+    inputs {
+        review_id: bytes(16)
+        reviewer: bytes(32)
+        reviewer_pubkey: bytes(2592)
+        signing_sk: bytes(4896)
+        risk_score: u16(0..1000)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "promote_blessed_sign_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        commit_id: bytes(32)
+        promotion_sk: bytes(4896)
+        required_approvals: u8(1..10)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

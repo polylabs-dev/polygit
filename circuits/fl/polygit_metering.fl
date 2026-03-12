@@ -1,0 +1,227 @@
+// Poly Git Metering — Git operation resource metering
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/metering
+//   Maps git operations to PolyKit 8-dimension metering.
+//
+// Dimension maps:
+//   push   → [B: transfer_bytes, S: objects_stored, O: refs_updated]
+//   pull   → [B: transfer_bytes, O: objects_fetched]
+//   commit → [O: objects_created, E: signing_execution]
+//   review → [E: ai_inference, C: review_circuit_ops]
+
+import polykit_metering
+
+type GitOperation = enum {
+    Push,
+    Pull,
+    Commit,
+    Review,
+}
+
+type PushMetrics = struct {
+    transfer_bytes: u64,
+    objects_stored: u64,
+    refs_updated: u32,
+    scatter_chunks: u32,
+}
+
+type PullMetrics = struct {
+    transfer_bytes: u64,
+    objects_fetched: u64,
+    cache_hits: u32,
+}
+
+type CommitMetrics = struct {
+    objects_created: u32,
+    tree_entries: u32,
+    signature_bytes: u32,
+}
+
+type ReviewMetrics = struct {
+    ai_inferences: u32,
+    diff_lines_analyzed: u64,
+    approvals_processed: u32,
+}
+
+type RepoQuota = struct {
+    repo_id: bytes(32),
+    max_storage_bytes: u64,
+    max_objects: u64,
+    max_push_per_hour: u32,
+    max_review_per_hour: u32,
+    current_storage: u64,
+    current_objects: u64,
+}
+
+stream git_metering_events: event<MeteringRecord>
+    | throttle 2000/s burst 5000
+
+// --- Meter a push operation ---
+circuit meter_push(user_id: bytes(16), repo_id: bytes(32), metrics: PushMetrics) -> MeteringRecord
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/metering
+    observe metrics: [push_meters, bandwidth_metered, storage_metered]
+    monitor "push_metering" { push_meters > 0 }
+    invariant "positive_transfer" { metrics.transfer_bytes > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let dims = DimensionValues {
+        executions: 1,
+        hashes: metrics.objects_stored * 2,
+        bandwidth: metrics.transfer_bytes,
+        storage: metrics.transfer_bytes,
+        observables: metrics.refs_updated,
+        proofs: 0,
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+    record_usage(user_id, "git.push", dims)
+}
+
+// --- Meter a pull operation ---
+circuit meter_pull(user_id: bytes(16), repo_id: bytes(32), metrics: PullMetrics) -> MeteringRecord
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/metering
+    observe metrics: [pull_meters, bandwidth_metered, cache_hit_ratio]
+    monitor "pull_metering" { pull_meters > 0 }
+    meters [compute_cycles, memory_bytes, bandwidth_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let dims = DimensionValues {
+        executions: 1,
+        hashes: metrics.objects_fetched,
+        bandwidth: metrics.transfer_bytes,
+        storage: 0,
+        observables: metrics.objects_fetched,
+        proofs: 0,
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+    record_usage(user_id, "git.pull", dims)
+}
+
+// --- Meter a review operation ---
+circuit meter_review(user_id: bytes(16), repo_id: bytes(32), metrics: ReviewMetrics) -> MeteringRecord
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/metering
+    observe metrics: [review_meters, ai_inference_metered]
+    monitor "review_metering" { review_meters > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let dims = DimensionValues {
+        executions: metrics.ai_inferences,
+        hashes: 0,
+        bandwidth: 0,
+        storage: 0,
+        observables: 0,
+        proofs: 0,
+        circuits: metrics.approvals_processed,
+        mpc_sessions: 0,
+    }
+    record_usage(user_id, "git.review", dims)
+}
+
+// --- Check repo quota before operation ---
+circuit check_repo_quota(repo_id: bytes(32), operation: GitOperation, estimated_bytes: u64) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/metering
+    observe metrics: [quota_checks, quota_exceeded, quota_remaining_pct]
+    monitor "quota_violations" { quota_exceeded < 10 per 3600s }
+    invariant "quota_defined" { eslite_exists("repo_quotas", repo_id) }
+    meters [compute_cycles]
+    wasm_abi [eslite_query]
+{
+    let quota = eslite_query("repo_quotas", repo_id)
+    match operation {
+        GitOperation::Push => {
+            if quota.current_storage + estimated_bytes > quota.max_storage_bytes { return false }
+            true
+        },
+        GitOperation::Pull => { true },
+        GitOperation::Commit => {
+            if quota.current_objects + 3 > quota.max_objects { return false }
+            true
+        },
+        GitOperation::Review => { true },
+    }
+}
+
+// --- Get accumulated usage for a repository ---
+circuit get_usage(user_id: bytes(16), repo_id: bytes(32)) -> DimensionValues
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/metering
+    observe metrics: [usage_queries]
+    monitor "usage_query_volume" { usage_queries < 500 per 60s }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query]
+{
+    get_usage_summary(user_id)
+}
+
+// ── Test annotations ────────────────────────────────────────────
+
+test golden "meter_push_basic" {
+    input {
+        user_id: hex("aa" * 16)
+        repo_id: hex("bb" * 32)
+        metrics: PushMetrics {
+            transfer_bytes: 4096,
+            objects_stored: 5,
+            refs_updated: 1,
+            scatter_chunks: 3,
+        }
+    }
+    assert {
+        result.dims.executions == 1
+        result.dims.bandwidth == 4096
+        result.dims.storage == 4096
+        result.dims.hashes == 10
+    }
+}
+
+test golden "check_quota_within_limit" {
+    setup {
+        eslite_insert("repo_quotas", hex("bb" * 32), RepoQuota {
+            repo_id: hex("bb" * 32),
+            max_storage_bytes: 1073741824,
+            max_objects: 1000000,
+            max_push_per_hour: 100,
+            max_review_per_hour: 50,
+            current_storage: 0,
+            current_objects: 0,
+        })
+    }
+    input {
+        repo_id: hex("bb" * 32)
+        operation: GitOperation::Push
+        estimated_bytes: 4096
+    }
+    assert {
+        result == true
+    }
+}
+
+test golden "check_quota_exceeded" {
+    setup {
+        eslite_insert("repo_quotas", hex("bb" * 32), RepoQuota {
+            repo_id: hex("bb" * 32),
+            max_storage_bytes: 1000,
+            max_objects: 1000000,
+            max_push_per_hour: 100,
+            max_review_per_hour: 50,
+            current_storage: 999,
+            current_objects: 0,
+        })
+    }
+    input {
+        repo_id: hex("bb" * 32)
+        operation: GitOperation::Push
+        estimated_bytes: 4096
+    }
+    assert {
+        result == false
+    }
+}

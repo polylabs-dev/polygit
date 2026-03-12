@@ -1,0 +1,284 @@
+// Poly Git Branch — Branch management, merging, and ref resolution
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/branch
+//   Branches are named refs pointing to commit ObjectIds.
+//   Refs stored on Stratum KV; merge operations require PQ-signed commits.
+//
+// Merge strategies:
+//   FastForward — move ref pointer if linear ancestry
+//   ThreeWay    — compute merge base, create merge commit with two parents
+//   Rebase      — replay commits onto target tip, re-sign each
+
+import polykit_identity
+import polygit_repository
+import polygit_commit
+
+type BranchRef = struct {
+    repo_id: RepoId,
+    name: string,
+    tip: ObjectId,
+    protected: bool,
+    created_at: u64,
+    updated_at: u64,
+}
+
+type MergeStrategy = enum {
+    FastForward,
+    ThreeWay,
+    Rebase,
+}
+
+type MergeResult = struct {
+    success: bool,
+    strategy_used: MergeStrategy,
+    merge_commit: ObjectId,
+    conflicts: list<string>,
+    commits_merged: u32,
+}
+
+type CherryPickResult = struct {
+    success: bool,
+    new_commit: ObjectId,
+    source_commit: ObjectId,
+    conflicts: list<string>,
+}
+
+stream branch_events: event<BranchRef>
+    | throttle 1000/s burst 2000
+
+// --- Create a new branch pointing at a commit ---
+circuit create_branch(repo_id: RepoId, name: string, target: ObjectId, protected: bool) -> BranchRef
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/branch
+    observe metrics: [branches_created, protected_branches]
+    monitor "branch_creation_rate" { branches_created < 500 per 3600s }
+    invariant "target_exists" { eslite_exists("commits", target) }
+    invariant "name_valid" { len(name) > 0 and not contains(name, "..") }
+    invariant "no_duplicate" { not eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(name))) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let ts = now()
+    let ref_key = concat(repo_id, encode("/refs/heads/"), encode(name))
+    let branch = BranchRef {
+        repo_id: repo_id,
+        name: name,
+        tip: target,
+        protected: protected,
+        created_at: ts,
+        updated_at: ts,
+    }
+    eslite_insert("refs", ref_key, branch)
+    emit(branch_events, branch)
+    branch
+}
+
+// --- Delete a branch ---
+circuit delete_branch(repo_id: RepoId, name: string) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/branch
+    observe metrics: [branches_deleted, protected_delete_blocked]
+    monitor "branch_deletion_audit" { branches_deleted < 50 per 3600s }
+    invariant "not_default" { name != eslite_query("repos", repo_id).default_branch }
+    meters [compute_cycles]
+    wasm_abi [eslite_delete, eslite_query]
+{
+    let ref_key = concat(repo_id, encode("/refs/heads/"), encode(name))
+    let branch = eslite_query("refs", ref_key)
+    assert(branch != null, "branch not found")
+    assert(not branch.protected, "cannot delete protected branch")
+    eslite_delete("refs", ref_key)
+    true
+}
+
+// --- Merge source branch into target branch ---
+circuit merge_branches(
+    repo_id: RepoId,
+    source: string,
+    target: string,
+    strategy: MergeStrategy,
+    committer: bytes(32),
+    committer_pubkey: bytes(2592),
+    signing_sk: bytes(4896)
+) -> MergeResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/branch
+    constant_time true
+    observe metrics: [merges_attempted, merges_succeeded, merge_conflicts, strategy_used]
+    monitor "merge_conflict_rate" { merge_conflicts < 20 per 3600s }
+    invariant "branches_exist" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(source))) }
+    invariant "target_exists" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(target))) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, scatter_cas_get, mldsa_sign, now]
+{
+    let source_ref = eslite_query("refs", concat(repo_id, encode("/refs/heads/"), encode(source)))
+    let target_ref = eslite_query("refs", concat(repo_id, encode("/refs/heads/"), encode(target)))
+    let source_commit = eslite_query("commits", source_ref.tip)
+    let target_commit = eslite_query("commits", target_ref.tip)
+
+    match strategy {
+        MergeStrategy::FastForward => {
+            let is_ancestor = walk_ancestry(source_commit, target_ref.tip)
+            if is_ancestor {
+                let updated = BranchRef { ..target_ref, tip: source_ref.tip, updated_at: now() }
+                eslite_insert("refs", concat(repo_id, encode("/refs/heads/"), encode(target)), updated)
+                MergeResult { success: true, strategy_used: MergeStrategy::FastForward, merge_commit: source_ref.tip, conflicts: [], commits_merged: 1 }
+            } else {
+                MergeResult { success: false, strategy_used: MergeStrategy::FastForward, merge_commit: zero_bytes(32), conflicts: ["not fast-forwardable"], commits_merged: 0 }
+            }
+        },
+        MergeStrategy::ThreeWay => {
+            let merge_base = find_merge_base(source_commit, target_commit)
+            let base_tree = eslite_query("commits", merge_base).tree_hash
+            let source_tree = source_commit.tree_hash
+            let target_tree = target_commit.tree_hash
+            let (merged_tree, conflicts) = three_way_merge(base_tree, source_tree, target_tree)
+            if len(conflicts) > 0 {
+                MergeResult { success: false, strategy_used: MergeStrategy::ThreeWay, merge_commit: zero_bytes(32), conflicts: conflicts, commits_merged: 0 }
+            } else {
+                let merge_commit = create_commit(repo_id, merged_tree, [target_ref.tip, source_ref.tip], committer, committer_pubkey, committer, committer_pubkey, signing_sk, concat("Merge ", source, " into ", target))
+                let updated = BranchRef { ..target_ref, tip: merge_commit.commit_id, updated_at: now() }
+                eslite_insert("refs", concat(repo_id, encode("/refs/heads/"), encode(target)), updated)
+                MergeResult { success: true, strategy_used: MergeStrategy::ThreeWay, merge_commit: merge_commit.commit_id, conflicts: [], commits_merged: 1 }
+            }
+        },
+        MergeStrategy::Rebase => {
+            let merge_base = find_merge_base(source_commit, target_commit)
+            let commits_to_replay = collect_commits_since(source_commit, merge_base)
+            let mut current_tip = target_ref.tip
+            let mut replayed = 0
+            for c in commits_to_replay {
+                let rebased = create_commit(repo_id, c.tree_hash, [current_tip], committer, committer_pubkey, committer, committer_pubkey, signing_sk, c.message)
+                current_tip = rebased.commit_id
+                replayed = replayed + 1
+            }
+            let updated = BranchRef { ..target_ref, tip: current_tip, updated_at: now() }
+            eslite_insert("refs", concat(repo_id, encode("/refs/heads/"), encode(target)), updated)
+            MergeResult { success: true, strategy_used: MergeStrategy::Rebase, merge_commit: current_tip, conflicts: [], commits_merged: replayed }
+        },
+    }
+}
+
+// --- Cherry-pick a single commit onto current branch ---
+circuit cherry_pick(
+    repo_id: RepoId,
+    source_commit_id: ObjectId,
+    target_branch: string,
+    committer: bytes(32),
+    committer_pubkey: bytes(2592),
+    signing_sk: bytes(4896)
+) -> CherryPickResult
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/branch
+    constant_time true
+    observe metrics: [cherry_picks, cherry_pick_conflicts]
+    monitor "cherry_pick_rate" { cherry_picks < 100 per 3600s }
+    invariant "commit_exists" { eslite_exists("commits", source_commit_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, mldsa_sign, now]
+{
+    let source = eslite_query("commits", source_commit_id)
+    let target_ref = eslite_query("refs", concat(repo_id, encode("/refs/heads/"), encode(target_branch)))
+    let target_commit = eslite_query("commits", target_ref.tip)
+    let parent_tree = eslite_query("commits", source.parent_hashes[0]).tree_hash
+    let (applied_tree, conflicts) = three_way_merge(parent_tree, source.tree_hash, target_commit.tree_hash)
+    if len(conflicts) > 0 {
+        CherryPickResult { success: false, new_commit: zero_bytes(32), source_commit: source_commit_id, conflicts: conflicts }
+    } else {
+        let new_commit = create_commit(repo_id, applied_tree, [target_ref.tip], committer, committer_pubkey, committer, committer_pubkey, signing_sk, concat("cherry-pick: ", source.message))
+        let updated = BranchRef { ..target_ref, tip: new_commit.commit_id, updated_at: now() }
+        eslite_insert("refs", concat(repo_id, encode("/refs/heads/"), encode(target_branch)), updated)
+        CherryPickResult { success: true, new_commit: new_commit.commit_id, source_commit: source_commit_id, conflicts: [] }
+    }
+}
+
+// --- List all branches for a repository ---
+circuit list_branches(repo_id: RepoId) -> list<BranchRef>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/branch
+    observe metrics: [branch_list_queries, branch_count]
+    monitor "branch_count" { branch_count < 10000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan]
+{
+    let prefix = concat(repo_id, encode("/refs/heads/"))
+    eslite_scan("refs", prefix)
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "create_branch_basic" {
+    input {
+        repo_id: hex("aa" * 32)
+        name: "feature/login"
+        target: hex("bb" * 32)
+        protected: false
+    }
+    assert {
+        branch.name == "feature/login"
+        branch.tip == hex("bb" * 32)
+        branch.protected == false
+        branch.repo_id == hex("aa" * 32)
+        branch.created_at > 0
+    }
+}
+
+test golden "merge_ff_basic" {
+    input {
+        repo_id: hex("aa" * 32)
+        source: "feature/login"
+        target: "main"
+        strategy: MergeStrategy::FastForward
+        committer: hex("cc" * 32)
+        committer_pubkey: hex("dd" * 2592)
+        signing_sk: hex("ee" * 4896)
+    }
+    assert {
+        result.strategy_used == MergeStrategy::FastForward
+        result.commits_merged >= 0
+        len(result.conflicts) == 0 or result.success == false
+    }
+}
+
+kat_vector "mldsa87_sign_verify_branch" {
+    function: "mldsa_sign"
+    input: {
+        sk: hex("ee" * 4896)
+        message: hex("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+    }
+    post_condition: {
+        len(signature) == 4627
+        mldsa_verify(message, signature, derived_pk(sk)) == true
+    }
+}
+
+fuzz_target "merge_signing_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        source: string(1..256)
+        target: string(1..256)
+        committer: bytes(32)
+        committer_pubkey: bytes(2592)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "cherry_pick_signing_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        source_commit_id: bytes(32)
+        target_branch: string(1..256)
+        committer: bytes(32)
+        committer_pubkey: bytes(2592)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

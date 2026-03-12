@@ -1,47 +1,44 @@
-[component]
-name = "poly-git"
+[package]
+name = "polygit"
 version = "0.1.0"
-category = "smart-circuit"
-implementation_type = "FastLang"
-status = "Published"
-description = "FL-native VCS SmartCircuit: push/pull lifecycle FSMs with 7 safety features, Stratum graph, Cortex governance, SPARK auth"
-license = "Apache-2.0"
-repository = "https://github.com/polylabs-dev/poly-git"
-keywords = ["vcs", "git", "smart-circuit", "version-control", "spark", "fsm", "governance"]
+description = "PQ-signed version control with enterprise governance on scatter-cas"
+license = "LicenseRef-PolyQuantum-Commercial"
+repository = "https://github.com/polylabs-dev/polygit"
 
-[component.author]
+[publisher]
+id = "polylabs-dev"
 name = "Poly Labs"
-email = "engineering@polylabs.dev"
-url = "https://polylabs.dev"
+signing_key_id = "polylabs-prime-v1"
 
-[component.marketplace]
-pricing = "free"
-visibility = "open"
+[escir]
+api_version = "0.9.1"
+min_platform_version = "0.9.0"
 
-[component.estream]
-min_version = "0.11.0"
+[dependencies]
+polykit = ">=0.2.0"
 
-[component.dependencies]
-polykit-identity = "^0.2.0"
-polykit-metering = "^0.2.0"
-polykit-telemetry = "^0.2.0"
-polykit-rate-limiter = "^0.2.0"
-polykit-sanitize = "^0.2.0"
-polykit-eslm-classify = "^0.2.0"
-polykit-console = "^0.2.0"
+[pricing]
+license_type = "per-invocation"
+share_price = "0.0004"
+private_price = "0.0006"
 
-[component.schemas]
-provides = ["VcsBlob", "VcsTree", "VcsCommit", "VcsTag", "VcsRef", "RepoConfig", "BranchPolicy", "AclEntry", "PushManifest", "PullManifest", "GovernanceAction", "VcsObservation"]
-requires = ["DerivedKeys", "DimensionValues", "TelemetryEvent", "RateCheckResult", "SanitizationResult", "ClassificationSuggestion", "WidgetPayload"]
+[telemetry]
+schema_hash = "auto"
 
-[component.circuits]
-provides = ["repo_create", "acl_grant", "acl_revoke", "branch_protect", "repo_transfer", "check_objects_valid", "check_ref_conflict", "check_branch_protection", "check_push_size_limits", "check_permission", "enforce_write_access", "enforce_admin_access", "check_vcs_rate", "derive_vcs_keys", "sign_push_manifest", "verify_push_signature", "meter_push", "meter_pull", "classify_blob", "classify_repo", "sanitize_commit_message", "detect_pii_in_blob", "record_push_observation", "record_pull_observation", "push_activity_widget", "health_dashboard_widget", "acl_management_widget", "governance_audit_widget"]
-target = ["cpu"]
+[telemetry.metrics]
+push_operations = "counter"
+commit_count = "counter"
+repo_creates = "counter"
+branch_operations = "counter"
+review_submissions = "counter"
+merge_operations = "counter"
 
-[component.lifecycle]
-status = "active"
-breaking_change_notice_days = 90
-changelog = "CHANGELOG.md"
+[telemetry.privacy]
+aggregate_window = "1h"
+cohort_min_size = 50
+noise_budget = "1.0"
 
 [component.include]
-circuits = ["circuits/**/*.fl"]
+circuits = ["circuits/fl/*.fl", "circuits/fl/graphs/*.fl"]
+tests = ["test_vectors/*.esz"]
+docs = ["docs/*.md"]

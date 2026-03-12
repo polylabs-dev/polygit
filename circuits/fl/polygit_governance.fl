@@ -1,0 +1,281 @@
+// Poly Git Governance — Enterprise governance composing eStream rbac.fl and group_hierarchy.fl
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git
+//   Hierarchical governance: org → group → repo with policy inheritance.
+//   Composes upstream eStream circuits (rbac, group_hierarchy) into
+//   Poly Git-specific access control and branch protection.
+//
+// Policy cascade:
+//   OrgPolicy → GroupPolicy → RepoPolicyOverride
+//   Lower-level overrides can tighten but never relax parent constraints.
+
+import polykit_identity
+import polykit_governance
+import polygit_repository
+
+// Upstream eStream governance primitives
+import estream.circuits.core.data.graphs.rbac
+import estream.circuits.core.data.graphs.group_hierarchy
+
+type OrgPolicy = struct {
+    org_id: bytes(32),
+    require_pq_signatures: bool,
+    require_code_review: bool,
+    min_approvals: u8,
+    max_risk_score: u16,
+    allowed_merge_strategies: u8,
+    enforce_classification: bool,
+    audit_retention_days: u32,
+}
+
+type GroupPolicy = struct {
+    group_id: bytes(32),
+    org_id: bytes(32),
+    inherit_org_policy: bool,
+    require_code_review: bool,
+    min_approvals: u8,
+    protected_branch_patterns: list<string>,
+    allowed_contributors: list<bytes(32)>,
+}
+
+type RepoPolicyOverride = struct {
+    repo_id: RepoId,
+    group_id: bytes(32),
+    override_min_approvals: u8,
+    override_max_risk: u16,
+    branch_protections: list<BranchProtection>,
+    codeowners: list<CodeOwnerRule>,
+}
+
+type BranchProtection = struct {
+    pattern: string,
+    require_review: bool,
+    min_approvals: u8,
+    require_ai_review: bool,
+    restrict_push: list<bytes(32)>,
+    require_linear_history: bool,
+}
+
+type CodeOwnerRule = struct {
+    path_pattern: string,
+    owners: list<bytes(32)>,
+    min_owner_approvals: u8,
+}
+
+type AccessCheckResult = struct {
+    allowed: bool,
+    effective_permissions: u64,
+    policy_source: string,
+    denied_reason: string,
+}
+
+type AuditEntry = struct {
+    principal: bytes(32),
+    action: string,
+    resource_id: bytes(32),
+    resource_type: string,
+    result: bool,
+    policy_applied: string,
+    timestamp_ns: u64,
+}
+
+stream governance_events: event<AuditEntry>
+    | throttle 2000/s burst 5000
+
+// --- Check repository access with full policy cascade ---
+circuit check_repo_access(
+    principal: bytes(32),
+    repo_id: RepoId,
+    permission_bit: u64
+) -> AccessCheckResult
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git {
+        governance hierarchical
+        audit_trail true
+    }
+    observe metrics: [access_checks, access_grants, access_denials, policy_cascade_depth]
+    monitor "access_denial_rate" { access_denials < 100 per 60s }
+    invariant "valid_permission" { permission_bit > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, now]
+{
+    let repo = eslite_query("repos", repo_id)
+    let repo_node = eslite_query("repo_nodes", repo_id)
+    let group_id = repo_node.group_id
+
+    let rbac_result = rbac.check_permission(eslite_query("rbac_graph_id"), principal, repo_id, permission_bit)
+    if rbac_result {
+        let effective = rbac.resolve_permissions(eslite_query("rbac_graph_id"), principal, repo_id)
+        let entry = AuditEntry { principal: principal, action: "access_check", resource_id: repo_id, resource_type: "repo", result: true, policy_applied: "rbac_direct", timestamp_ns: now() }
+        emit(governance_events, entry)
+        return AccessCheckResult { allowed: true, effective_permissions: effective, policy_source: "rbac_direct", denied_reason: "" }
+    }
+
+    let group_rbac = rbac.check_permission(eslite_query("rbac_graph_id"), principal, group_id, permission_bit)
+    if group_rbac {
+        let override = eslite_query("repo_overrides", repo_id)
+        if override != null {
+            let restricted = check_override_restrictions(override, principal, permission_bit)
+            if not restricted {
+                let entry = AuditEntry { principal: principal, action: "access_check", resource_id: repo_id, resource_type: "repo", result: false, policy_applied: "repo_override", timestamp_ns: now() }
+                emit(governance_events, entry)
+                return AccessCheckResult { allowed: false, effective_permissions: 0, policy_source: "repo_override", denied_reason: "repo-level override restricts access" }
+            }
+        }
+        let effective = rbac.resolve_permissions(eslite_query("rbac_graph_id"), principal, group_id)
+        let entry = AuditEntry { principal: principal, action: "access_check", resource_id: repo_id, resource_type: "repo", result: true, policy_applied: "group_inherited", timestamp_ns: now() }
+        emit(governance_events, entry)
+        return AccessCheckResult { allowed: true, effective_permissions: effective, policy_source: "group_inherited", denied_reason: "" }
+    }
+
+    let entry = AuditEntry { principal: principal, action: "access_check", resource_id: repo_id, resource_type: "repo", result: false, policy_applied: "none", timestamp_ns: now() }
+    emit(governance_events, entry)
+    AccessCheckResult { allowed: false, effective_permissions: 0, policy_source: "none", denied_reason: "no matching role assignment" }
+}
+
+// --- Apply org-level policy to a group ---
+circuit apply_org_policy(org_id: bytes(32), group_id: bytes(32)) -> GroupPolicy
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git {
+        governance hierarchical
+    }
+    observe metrics: [policy_applications, policy_inheritance_depth]
+    monitor "policy_propagation" { policy_applications > 0 }
+    invariant "org_exists" { eslite_exists("org_policies", org_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert]
+{
+    let org_policy = eslite_query("org_policies", org_id)
+    let existing_group = eslite_query("group_policies", group_id)
+    let effective = GroupPolicy {
+        group_id: group_id,
+        org_id: org_id,
+        inherit_org_policy: true,
+        require_code_review: org_policy.require_code_review or (existing_group != null and existing_group.require_code_review),
+        min_approvals: max(org_policy.min_approvals, if existing_group != null { existing_group.min_approvals } else { 0 }),
+        protected_branch_patterns: if existing_group != null { existing_group.protected_branch_patterns } else { ["main", "release/*"] },
+        allowed_contributors: if existing_group != null { existing_group.allowed_contributors } else { [] },
+    }
+    eslite_insert("group_policies", group_id, effective)
+    effective
+}
+
+// --- Enforce branch protection rules on push ---
+circuit enforce_branch_protection(
+    repo_id: RepoId,
+    branch_name: string,
+    pusher: bytes(32),
+    commit_id: ObjectId
+) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git {
+        governance hierarchical
+        audit_trail true
+    }
+    observe metrics: [protection_checks, push_blocked, push_allowed]
+    monitor "branch_protection_blocks" { push_blocked < 50 per 3600s }
+    invariant "branch_exists" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(branch_name))) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, now]
+{
+    let override = eslite_query("repo_overrides", repo_id)
+    if override == null { return true }
+    let matching_protection = find(override.branch_protections, |bp| pattern_match(bp.pattern, branch_name))
+    if matching_protection == null { return true }
+    if matching_protection.restrict_push != [] {
+        if not contains(matching_protection.restrict_push, pusher) {
+            let entry = AuditEntry { principal: pusher, action: "push_blocked", resource_id: repo_id, resource_type: "branch", result: false, policy_applied: "branch_protection", timestamp_ns: now() }
+            emit(governance_events, entry)
+            return false
+        }
+    }
+    if matching_protection.require_review {
+        let reviews = eslite_scan("review_results", commit_id)
+        let approved = count(reviews, |r| r.status == ReviewStatus::Approved)
+        if approved < matching_protection.min_approvals {
+            let entry = AuditEntry { principal: pusher, action: "push_blocked_review", resource_id: repo_id, resource_type: "branch", result: false, policy_applied: "review_required", timestamp_ns: now() }
+            emit(governance_events, entry)
+            return false
+        }
+    }
+    let entry = AuditEntry { principal: pusher, action: "push_allowed", resource_id: repo_id, resource_type: "branch", result: true, policy_applied: "branch_protection", timestamp_ns: now() }
+    emit(governance_events, entry)
+    true
+}
+
+// --- Audit access history for a principal ---
+circuit audit_access(principal: bytes(32), since_ns: u64) -> list<AuditEntry>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git {
+        audit_trail true
+    }
+    observe metrics: [audit_queries, audit_entries_returned]
+    monitor "audit_query_volume" { audit_queries < 100 per 60s }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan]
+{
+    let all_entries = eslite_scan("audit_log", principal)
+    filter(all_entries, |e| e.timestamp_ns >= since_ns)
+}
+
+// ── Test annotations ────────────────────────────────────────────
+
+test golden "check_repo_access_allowed" {
+    setup {
+        eslite_insert("rbac_graph_id", hex("00" * 32))
+        rbac.assign_role(hex("00" * 32), hex("aa" * 32), hex("bb" * 32), 0x01)
+    }
+    input {
+        principal: hex("aa" * 32)
+        repo_id: hex("bb" * 32)
+        permission_bit: 0x01
+    }
+    assert {
+        result.allowed == true
+        result.effective_permissions > 0
+        result.denied_reason == ""
+    }
+}
+
+test golden "check_repo_access_denied" {
+    input {
+        principal: hex("aa" * 32)
+        repo_id: hex("bb" * 32)
+        permission_bit: 0x01
+    }
+    assert {
+        result.allowed == false
+        result.policy_source == "none"
+        result.denied_reason == "no matching role assignment"
+    }
+}
+
+test golden "enforce_branch_protection_basic" {
+    setup {
+        eslite_insert("repo_overrides", hex("bb" * 32), RepoPolicyOverride {
+            repo_id: hex("bb" * 32),
+            group_id: hex("cc" * 32),
+            override_min_approvals: 1,
+            override_max_risk: 500,
+            branch_protections: [BranchProtection {
+                pattern: "main",
+                require_review: false,
+                min_approvals: 0,
+                require_ai_review: false,
+                restrict_push: [],
+                require_linear_history: false,
+            }],
+            codeowners: [],
+        })
+    }
+    input {
+        repo_id: hex("bb" * 32)
+        branch_name: "main"
+        pusher: hex("aa" * 32)
+        commit_id: hex("dd" * 32)
+    }
+    assert {
+        result == true
+    }
+}
