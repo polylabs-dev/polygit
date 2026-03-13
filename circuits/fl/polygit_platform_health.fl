@@ -1,4 +1,4 @@
-/// Poly Git Platform Health — Blind relay pattern health monitoring
+/// Poly Git Platform Health — Blind relay pattern health monitoring (v0.11.0)
 ///
 /// Aggregates git-operation metrics through blinded, cohort-enforced telemetry.
 /// Stratum: kv store + lex governance under esn/global/org/polylabs/git.
@@ -14,7 +14,7 @@ import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
 
 // ── Data Declarations with Stratum + Cortex ─────────────────────────
 
-data PlatformMetrics : app v1 {
+data PlatformMetrics : git v1 {
     blinded_user_id: bytes(32),
     cohort_ok: bool,
     cohort_size: u32,
@@ -192,6 +192,9 @@ circuit git_anomaly_check(
     streamsight true
     observe metrics: [anomaly_checks, anomaly_detections]
     monitor "anomaly_rate" { anomaly_detections < 50/hr }
+    invariant "window_positive" { window_ms > 0 }
+    property safety "critical_on_empty" { len(windowed) == 0 implies status == HealthStatus::Critical }
+    property liveness "anomaly_check_completes" { eventually(status == HealthStatus::Healthy or status == HealthStatus::Degraded or status == HealthStatus::Critical) }
     cortex {
         ai_feed {
             model "git_health_classifier"

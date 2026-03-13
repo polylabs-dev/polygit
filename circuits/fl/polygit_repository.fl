@@ -1,9 +1,15 @@
-// Poly Git Repository — scatter-CAS object model and repository management
+// Poly Git Repository — scatter-CAS object model and repository management (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/git/repo
 //   Every git object (blob, tree, commit, tag) is content-addressed via SHA3-256
 //   and scatter-stored with k-of-n erasure coding across providers.
+//
+// es-git Wire VCS opcodes:
+//   0xA0 REPO_INIT    — initialise a new scatter-CAS repository
+//   0xA1 OBJECT_PUSH  — push objects to scatter-CAS
+//   0xA2 OBJECT_PULL  — pull objects from scatter-CAS
+//   0xA4 REF_QUERY    — resolve a ref to an ObjectId
 //
 // Object model:
 //   RepoId   = SHA3-256(org_id || repo_name || created_at)
@@ -23,7 +29,7 @@ type ObjectType = enum {
     Tag,
 }
 
-type RepoConfig = struct {
+data RepoConfig : git v1 {
     repo_id: RepoId,
     org_id: bytes(32),
     name: string,
@@ -34,8 +40,15 @@ type RepoConfig = struct {
     created_at: u64,
     owner_pubkey: bytes(2592),
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/repo
+    cortex {
+        redact [owner_pubkey]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type GitObject = struct {
+data GitObject : git v1 {
     object_id: ObjectId,
     object_type: ObjectType,
     size_bytes: u64,
@@ -43,14 +56,26 @@ type GitObject = struct {
     scatter_refs: list<bytes(32)>,
     stored_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/repo
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type RepoState = struct {
+data RepoState : git v1 {
     repo_id: RepoId,
     head_ref: ObjectId,
     object_count: u64,
     total_size_bytes: u64,
     last_push_ns: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/repo
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
 stream repo_events: event<RepoConfig>
     | throttle 500/s burst 1000
@@ -58,14 +83,19 @@ stream repo_events: event<RepoConfig>
 stream object_events: event<GitObject>
     | throttle 5000/s burst 10000
 
-// --- Create a new repository ---
+// --- Create a new repository (Wire opcode 0xA0 REPO_INIT) ---
+@guard(block_on: repo_quota_exceeded)
 circuit create_repo(org_id: bytes(32), name: string, owner_pk: bytes(2592), scatter_k: u8, scatter_n: u8) -> RepoConfig
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/repo
+    precision C
     observe metrics: [repo_creations, org_id, scatter_policy]
     monitor "repo_creation_rate" { repo_creations < 100 per 60s }
     invariant "scatter_threshold" { scatter_k >= 3 and scatter_k <= scatter_n }
     invariant "scatter_redundancy" { scatter_n >= scatter_k + 2 }
+    invariant "name_nonempty" { len(name) > 0 }
+    property safety "scatter_policy_valid" { scatter_k >= 3 and scatter_n >= scatter_k + 2 }
+    property liveness "repo_eventually_created" { eventually(eslite_exists("repos", repo_id)) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now, scatter_cas_init]
 {
@@ -88,14 +118,17 @@ circuit create_repo(org_id: bytes(32), name: string, owner_pk: bytes(2592), scat
     config
 }
 
-// --- Initialize repository with empty tree and root commit ---
+// --- Initialize repository with empty tree and root commit (Wire opcode 0xA0 REPO_INIT) ---
 circuit init_repo(config: RepoConfig, signing_sk: bytes(4896)) -> RepoState
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/git/repo
+    precision C
     constant_time true
     observe metrics: [repo_inits, initial_commit_sign]
     monitor "init_latency" { init_time_ms < 200 }
     invariant "repo_exists" { eslite_exists("repos", config.repo_id) }
+    property safety "init_idempotent" { not eslite_exists("repo_state", config.repo_id) }
+    property liveness "state_eventually_persisted" { eventually(eslite_exists("repo_state", config.repo_id)) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, eslite_query, scatter_cas_put, mldsa_sign, now]
 {
@@ -133,13 +166,16 @@ circuit init_repo(config: RepoConfig, signing_sk: bytes(4896)) -> RepoState
     state
 }
 
-// --- Store a git object in scatter-CAS ---
+// --- Store a git object in scatter-CAS (Wire opcode 0xA1 OBJECT_PUSH) ---
 circuit store_object(repo_id: RepoId, obj_type: ObjectType, content: bytes) -> GitObject
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/repo
+    precision C
     observe metrics: [object_stores, object_type, content_size]
     monitor "object_store_throughput" { object_stores > 0 }
     invariant "content_nonempty" { len(content) > 0 }
+    invariant "repo_exists" { eslite_exists("repos", repo_id) }
+    property safety "content_integrity" { sha3_256(content) == object_id }
     meters [compute_cycles, memory_bytes, bandwidth_bytes, storage_bytes]
     wasm_abi [eslite_insert, eslite_query, scatter_cas_put, now]
 {
@@ -161,13 +197,15 @@ circuit store_object(repo_id: RepoId, obj_type: ObjectType, content: bytes) -> G
     obj
 }
 
-// --- Retrieve a git object from scatter-CAS ---
+// --- Retrieve a git object from scatter-CAS (Wire opcode 0xA2 OBJECT_PULL) ---
 circuit get_object(repo_id: RepoId, object_id: ObjectId) -> GitObject
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/repo
+    precision C
     observe metrics: [object_gets, cache_hits, cache_misses]
     monitor "object_get_latency" { get_latency_ms < 100 }
     invariant "object_exists" { eslite_exists("objects", object_id) }
+    property safety "integrity_verified" { sha3_256(scatter_cas_get(obj.scatter_refs)) == obj.content_hash }
     meters [compute_cycles, bandwidth_bytes]
     wasm_abi [eslite_query, scatter_cas_get]
 {
@@ -179,12 +217,15 @@ circuit get_object(repo_id: RepoId, object_id: ObjectId) -> GitObject
 }
 
 // --- Delete a repository and all its objects ---
+@guard(block_on: deletion_cooldown_active)
 circuit delete_repo(repo_id: RepoId, requester_pk: bytes(2592)) -> bool
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/repo
+    precision C
     observe metrics: [repo_deletions, objects_purged]
     monitor "deletion_audit" { repo_deletions < 10 per 3600s }
     invariant "owner_only" { requester_pk == eslite_query("repos", repo_id).owner_pubkey }
+    property safety "owner_authorization" { requester_pk == eslite_query("repos", repo_id).owner_pubkey }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_delete, eslite_query, scatter_cas_delete, now]
 {

@@ -1,0 +1,378 @@
+// Poly Git LFS — Large file storage via scatter-CAS (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/lfs
+//   Large files (binaries, assets, models) are stored in scatter-CAS with
+//   pointer files in the git tree. Replaces Git LFS with PQ-native storage.
+//
+// es-git Wire VCS opcodes:
+//   0xA1 OBJECT_PUSH — used for LFS object upload to scatter-CAS
+//   0xA2 OBJECT_PULL — used for LFS object download from scatter-CAS
+//
+// Storage model:
+//   LfsPointer stored in git tree (small, content-addressed)
+//   LfsObject stored in scatter-CAS (large, erasure-coded)
+//   SHA3-256 content hash links pointer → object
+
+import polykit_identity
+import polykit_metering
+import polygit_repository
+
+// ── Data declarations ───────────────────────────────────────────
+
+type LfsObjectState = enum {
+    Uploading,
+    Available,
+    Expired,
+    Deleted,
+}
+
+data LfsObject : git v1 {
+    object_id: bytes(32),
+    repo_id: bytes(32),
+    content_hash: bytes(32),
+    size_bytes: u64,
+    mime_type: string,
+    scatter_refs: list<bytes(32)>,
+    scatter_k: u8,
+    scatter_n: u8,
+    state: LfsObjectState,
+    uploader: bytes(32),
+    uploaded_at: u64,
+    expires_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/lfs
+    cortex {
+        redact [uploader]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data LfsPointer : git v1 {
+    pointer_id: bytes(32),
+    repo_id: bytes(32),
+    object_id: bytes(32),
+    path: string,
+    size_bytes: u64,
+    content_hash: bytes(32),
+    filter: string,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/lfs
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data LfsQuota : git v1 {
+    repo_id: bytes(32),
+    max_lfs_bytes: u64,
+    max_lfs_objects: u64,
+    current_lfs_bytes: u64,
+    current_lfs_objects: u64,
+    updated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/lfs
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream lfs_events: event<LfsObject>
+    retention 365d
+    consumers [streamsight, audit, metering]
+
+stream lfs_pointer_events: event<LfsPointer>
+    retention 365d
+    consumers [streamsight]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+// --- Store a large file object in scatter-CAS (Wire opcode 0xA1 OBJECT_PUSH) ---
+@guard(block_on: storage_quota_exceeded)
+circuit store_lfs_object(
+    repo_id: bytes(32),
+    content: bytes,
+    mime_type: string,
+    path: string,
+    uploader: bytes(32),
+    expires_at: u64
+) -> (LfsObject, LfsPointer)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/lfs
+    precision C
+    observe metrics: [lfs_objects_stored, lfs_bytes_stored, lfs_scatter_chunks]
+    monitor "lfs_storage_rate" { lfs_objects_stored < 200 per 3600s }
+    monitor "lfs_size_anomaly" { lfs_bytes_stored < 10737418240 per 3600s }
+    invariant "content_nonempty" { len(content) > 0 }
+    invariant "repo_exists" { eslite_exists("repos", repo_id) }
+    invariant "quota_not_exceeded" { check_lfs_quota(repo_id, len(content)) }
+    property safety "content_hash_matches" { sha3_256(content) == object.content_hash }
+    property liveness "object_eventually_available" { eventually(object.state == LfsObjectState::Available) }
+    meters [compute_cycles, memory_bytes, bandwidth_bytes, storage_bytes]
+    wasm_abi [eslite_insert, eslite_query, scatter_cas_put, now]
+{
+    let ts = now()
+    let content_hash = sha3_256(content)
+    let object_id = sha3_256(concat(repo_id, content_hash, encode_u64(ts)))
+    let config = eslite_query("repos", repo_id)
+    let scatter_refs = scatter_cas_put(content, config.scatter_k, config.scatter_n)
+    let obj = LfsObject {
+        object_id: object_id,
+        repo_id: repo_id,
+        content_hash: content_hash,
+        size_bytes: len(content),
+        mime_type: mime_type,
+        scatter_refs: scatter_refs,
+        scatter_k: config.scatter_k,
+        scatter_n: config.scatter_n,
+        state: LfsObjectState::Available,
+        uploader: uploader,
+        uploaded_at: ts,
+        expires_at: expires_at,
+    }
+    eslite_insert("lfs_objects", object_id, obj)
+    let pointer_content = concat(
+        encode("version https://poly-git-lfs.polylabs.dev/spec/v1\n"),
+        encode("oid sha3-256:"), encode_hex(content_hash), encode("\n"),
+        encode("size "), encode_u64(len(content)), encode("\n")
+    )
+    let pointer_id = sha3_256(pointer_content)
+    let pointer = LfsPointer {
+        pointer_id: pointer_id,
+        repo_id: repo_id,
+        object_id: object_id,
+        path: path,
+        size_bytes: len(content),
+        content_hash: content_hash,
+        filter: "lfs",
+        created_at: ts,
+    }
+    eslite_insert("lfs_pointers", pointer_id, pointer)
+    eslite_insert("lfs_pointer_by_path", concat(repo_id, encode(path)), pointer_id)
+    let quota = eslite_query("lfs_quotas", repo_id)
+    if quota != null {
+        eslite_insert("lfs_quotas", repo_id, LfsQuota {
+            ..quota,
+            current_lfs_bytes: quota.current_lfs_bytes + len(content),
+            current_lfs_objects: quota.current_lfs_objects + 1,
+            updated_at: ts,
+        })
+    }
+    emit(lfs_events, obj)
+    emit(lfs_pointer_events, pointer)
+    (obj, pointer)
+}
+
+// --- Resolve an LFS pointer to its full object (Wire opcode 0xA2 OBJECT_PULL) ---
+circuit resolve_lfs_pointer(
+    repo_id: bytes(32),
+    pointer_id: bytes(32)
+) -> LfsObject
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/lfs
+    precision C
+    observe metrics: [lfs_pointer_resolutions, lfs_cache_hits, lfs_bytes_fetched]
+    monitor "lfs_fetch_rate" { lfs_pointer_resolutions < 1000 per 3600s }
+    invariant "pointer_exists" { eslite_exists("lfs_pointers", pointer_id) }
+    property safety "pointer_references_valid_object" { eslite_exists("lfs_objects", pointer.object_id) }
+    property liveness "resolution_completes" { eventually(result.state == LfsObjectState::Available) }
+    meters [compute_cycles, bandwidth_bytes]
+    wasm_abi [eslite_query, scatter_cas_get]
+{
+    let pointer = eslite_query("lfs_pointers", pointer_id)
+    assert(pointer.repo_id == repo_id, "pointer does not belong to repository")
+    let obj = eslite_query("lfs_objects", pointer.object_id)
+    assert(obj != null, "LFS object not found")
+    assert(obj.state == LfsObjectState::Available, "LFS object not available")
+    if obj.expires_at > 0 and obj.expires_at < now() {
+        eslite_insert("lfs_objects", pointer.object_id, LfsObject { ..obj, state: LfsObjectState::Expired })
+        assert(false, "LFS object has expired")
+    }
+    let content = scatter_cas_get(obj.scatter_refs)
+    let verified_hash = sha3_256(content)
+    assert(verified_hash == obj.content_hash, "LFS object integrity check failed")
+    obj
+}
+
+// --- Resolve an LFS pointer by file path ---
+circuit resolve_lfs_by_path(
+    repo_id: bytes(32),
+    path: string
+) -> LfsObject
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/lfs
+    precision C
+    observe metrics: [lfs_path_resolutions]
+    monitor "lfs_path_resolution_rate" { lfs_path_resolutions < 1000 per 3600s }
+    invariant "path_nonempty" { len(path) > 0 }
+    property safety "path_maps_to_valid_pointer" { eslite_exists("lfs_pointer_by_path", concat(repo_id, encode(path))) }
+    meters [compute_cycles, bandwidth_bytes]
+    wasm_abi [eslite_query, scatter_cas_get]
+{
+    let pointer_id = eslite_query("lfs_pointer_by_path", concat(repo_id, encode(path)))
+    assert(pointer_id != null, "no LFS pointer for path")
+    resolve_lfs_pointer(repo_id, pointer_id)
+}
+
+// --- Delete an LFS object ---
+@guard(block_on: lfs_delete_cooldown)
+circuit delete_lfs_object(
+    repo_id: bytes(32),
+    object_id: bytes(32),
+    actor: bytes(32)
+) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/lfs
+    precision C
+    observe metrics: [lfs_objects_deleted, lfs_bytes_freed]
+    monitor "lfs_deletion_rate" { lfs_objects_deleted < 100 per 3600s }
+    invariant "object_exists" { eslite_exists("lfs_objects", object_id) }
+    invariant "object_belongs_to_repo" { eslite_query("lfs_objects", object_id).repo_id == repo_id }
+    property safety "deleted_object_freed" { result implies eslite_query("lfs_objects", object_id).state == LfsObjectState::Deleted }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, scatter_cas_delete, now]
+{
+    let ts = now()
+    let obj = eslite_query("lfs_objects", object_id)
+    assert(obj.repo_id == repo_id, "object does not belong to repository")
+    scatter_cas_delete(obj.scatter_refs)
+    eslite_insert("lfs_objects", object_id, LfsObject { ..obj, state: LfsObjectState::Deleted, scatter_refs: [] })
+    let quota = eslite_query("lfs_quotas", repo_id)
+    if quota != null {
+        eslite_insert("lfs_quotas", repo_id, LfsQuota {
+            ..quota,
+            current_lfs_bytes: quota.current_lfs_bytes - obj.size_bytes,
+            current_lfs_objects: quota.current_lfs_objects - 1,
+            updated_at: ts,
+        })
+    }
+    true
+}
+
+// --- Check LFS quota (internal helper) ---
+circuit check_lfs_quota(repo_id: bytes(32), additional_bytes: u64) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/lfs
+    precision C
+    observe metrics: [lfs_quota_checks, lfs_quota_exceeded]
+    monitor "lfs_quota_violations" { lfs_quota_exceeded < 20 per 3600s }
+    invariant "repo_exists" { eslite_exists("repos", repo_id) }
+    property safety "quota_check_deterministic" { check_lfs_quota(repo_id, additional_bytes) == check_lfs_quota(repo_id, additional_bytes) }
+    meters [compute_cycles]
+    wasm_abi [eslite_query]
+{
+    let quota = eslite_query("lfs_quotas", repo_id)
+    if quota == null { return true }
+    if quota.current_lfs_bytes + additional_bytes > quota.max_lfs_bytes { return false }
+    if quota.current_lfs_objects + 1 > quota.max_lfs_objects { return false }
+    true
+}
+
+// ── Test annotations ────────────────────────────────────────────
+
+test golden "store_lfs_object_basic" {
+    setup {
+        eslite_insert("repos", hex("aa" * 32), RepoConfig {
+            repo_id: hex("aa" * 32),
+            org_id: hex("bb" * 32),
+            name: "test-repo",
+            default_branch: "main",
+            scatter_k: 3,
+            scatter_n: 5,
+            classification: "internal",
+            created_at: 1000,
+            owner_pubkey: hex("cc" * 2592),
+        })
+    }
+    input {
+        repo_id: hex("aa" * 32)
+        content: bytes("large binary content here")
+        mime_type: "application/octet-stream"
+        path: "models/large-model.bin"
+        uploader: hex("dd" * 32)
+        expires_at: 0
+    }
+    assert {
+        result.0.object_id != hex("00" * 32)
+        result.0.state == LfsObjectState::Available
+        result.0.size_bytes == 25
+        len(result.0.scatter_refs) > 0
+        result.1.path == "models/large-model.bin"
+        result.1.filter == "lfs"
+    }
+}
+
+test golden "resolve_lfs_pointer_basic" {
+    setup {
+        let (obj, pointer) = store_lfs_object(hex("aa" * 32), bytes("test content"), "text/plain", "test.bin", hex("dd" * 32), 0)
+    }
+    input {
+        repo_id: hex("aa" * 32)
+        pointer_id: pointer.pointer_id
+    }
+    assert {
+        result.object_id == obj.object_id
+        result.state == LfsObjectState::Available
+        result.content_hash == obj.content_hash
+    }
+}
+
+test golden "check_lfs_quota_exceeded" {
+    setup {
+        eslite_insert("repos", hex("aa" * 32), RepoConfig {
+            repo_id: hex("aa" * 32),
+            org_id: hex("bb" * 32),
+            name: "test-repo",
+            default_branch: "main",
+            scatter_k: 3,
+            scatter_n: 5,
+            classification: "internal",
+            created_at: 1000,
+            owner_pubkey: hex("cc" * 2592),
+        })
+        eslite_insert("lfs_quotas", hex("aa" * 32), LfsQuota {
+            repo_id: hex("aa" * 32),
+            max_lfs_bytes: 1000,
+            max_lfs_objects: 10,
+            current_lfs_bytes: 990,
+            current_lfs_objects: 9,
+            updated_at: 1000,
+        })
+    }
+    input {
+        repo_id: hex("aa" * 32)
+        additional_bytes: 500
+    }
+    assert {
+        result == false
+    }
+}
+
+fuzz_target "lfs_store_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        content: bytes(1..1048576)
+        mime_type: string(1..128)
+        path: string(1..512)
+        uploader: bytes(32)
+    }
+    assert {
+        no_panic
+    }
+}
+
+fuzz_target "lfs_resolve_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        pointer_id: bytes(32)
+    }
+    assert {
+        no_panic
+    }
+}

@@ -1,0 +1,390 @@
+// Poly Git CI/CD — Pipeline status tracking and badge generation (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/ci
+//   CI/CD pipelines are triggered by push/merge events, tracked as state machines,
+//   and produce verifiable badges signed with ML-DSA-87.
+//
+// es-git Wire VCS opcodes:
+//   0xA1 OBJECT_PUSH — triggers pipeline on push to watched branches
+//   0xA9 MERGE_EXEC  — triggers pipeline on merge to protected branches
+//
+// Pipeline model:
+//   PipelineRun contains ordered PipelineSteps.
+//   Each step transitions through: Queued -> Running -> Passed/Failed/Cancelled.
+//   Badge is generated from final pipeline state and signed.
+
+import polykit_identity
+import polygit_repository
+import polygit_commit
+import polygit_branch
+
+// ── Data declarations ───────────────────────────────────────────
+
+type PipelineStatus = enum {
+    Queued,
+    Running,
+    Passed,
+    Failed,
+    Cancelled,
+}
+
+type StepStatus = enum {
+    Pending,
+    Running,
+    Passed,
+    Failed,
+    Skipped,
+}
+
+data PipelineRun : git v1 {
+    pipeline_id: bytes(16),
+    repo_id: bytes(32),
+    commit_id: bytes(32),
+    branch: string,
+    trigger: string,
+    status: PipelineStatus,
+    steps: list<bytes(16)>,
+    started_at: u64,
+    finished_at: u64,
+    duration_ms: u64,
+    triggered_by: bytes(32),
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/ci
+    cortex {
+        redact [triggered_by]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data PipelineStep : git v1 {
+    step_id: bytes(16),
+    pipeline_id: bytes(16),
+    name: string,
+    image: string,
+    status: StepStatus,
+    exit_code: i32,
+    log_hash: bytes(32),
+    started_at: u64,
+    finished_at: u64,
+    duration_ms: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/ci
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data Badge : git v1 {
+    badge_id: bytes(16),
+    repo_id: bytes(32),
+    pipeline_id: bytes(16),
+    label: string,
+    status: string,
+    color: string,
+    commit_id: bytes(32),
+    branch: string,
+    signature: bytes(4627),
+    generated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/ci
+    cortex {
+        redact [signature]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+// ── Pipeline state machine ──────────────────────────────────────
+
+state_machine pipeline_fsm {
+    initial Queued
+    persistence wal
+    terminal [Passed, Failed, Cancelled]
+    ai_anomaly_detection true
+
+    Queued -> Running when step_started
+    Running -> Running when step_completed guard has_remaining_steps
+    Running -> Passed when all_steps_passed
+    Running -> Failed when step_failed
+    Queued -> Cancelled when user_cancelled or timeout
+    Running -> Cancelled when user_cancelled
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream pipeline_events: event<PipelineRun>
+    retention 365d
+    consumers [streamsight, audit, governance]
+
+stream badge_events: event<Badge>
+    retention 365d
+    consumers [streamsight]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+// --- Trigger a new pipeline run ---
+@guard(block_on: ci_quota_exceeded)
+circuit trigger_pipeline(
+    repo_id: bytes(32),
+    commit_id: bytes(32),
+    branch: string,
+    trigger: string,
+    triggered_by: bytes(32),
+    step_names: list<string>,
+    step_images: list<string>
+) -> PipelineRun
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/ci
+    precision C
+    observe metrics: [pipelines_triggered, pipeline_queue_depth, trigger_type]
+    monitor "pipeline_trigger_rate" { pipelines_triggered < 500 per 3600s }
+    invariant "commit_exists" { eslite_exists("commits", commit_id) }
+    invariant "steps_nonempty" { len(step_names) > 0 }
+    invariant "steps_match_images" { len(step_names) == len(step_images) }
+    property safety "pipeline_has_steps" { len(run.steps) > 0 }
+    property liveness "pipeline_eventually_starts" { eventually(run.status != PipelineStatus::Queued) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let ts = now()
+    let pipeline_seed = concat(repo_id, commit_id, encode(branch), encode_u64(ts))
+    let pipeline_id = bit_slice(sha3_256(pipeline_seed), 0, 128)
+    let step_ids = []
+    for i in 0..len(step_names) {
+        let step_seed = concat(pipeline_id, encode(step_names[i]), encode_u64(i))
+        let step_id = bit_slice(sha3_256(step_seed), 0, 128)
+        let step = PipelineStep {
+            step_id: step_id,
+            pipeline_id: pipeline_id,
+            name: step_names[i],
+            image: step_images[i],
+            status: StepStatus::Pending,
+            exit_code: 0,
+            log_hash: zero_bytes(32),
+            started_at: 0,
+            finished_at: 0,
+            duration_ms: 0,
+        }
+        eslite_insert("pipeline_steps", step_id, step)
+        step_ids.push(step_id)
+    }
+    let run = PipelineRun {
+        pipeline_id: pipeline_id,
+        repo_id: repo_id,
+        commit_id: commit_id,
+        branch: branch,
+        trigger: trigger,
+        status: PipelineStatus::Queued,
+        steps: step_ids,
+        started_at: ts,
+        finished_at: 0,
+        duration_ms: 0,
+        triggered_by: triggered_by,
+    }
+    eslite_insert("pipelines", pipeline_id, run)
+    emit(pipeline_events, run)
+    run
+}
+
+// --- Update a pipeline step status ---
+circuit update_step(
+    pipeline_id: bytes(16),
+    step_id: bytes(16),
+    status: StepStatus,
+    exit_code: i32,
+    log_hash: bytes(32)
+) -> PipelineRun
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/ci
+    precision C
+    observe metrics: [steps_updated, step_status, step_duration_ms]
+    monitor "step_failure_rate" { count(step_status == StepStatus::Failed) < 50 per 3600s }
+    invariant "pipeline_exists" { eslite_exists("pipelines", pipeline_id) }
+    invariant "step_exists" { eslite_exists("pipeline_steps", step_id) }
+    property safety "step_belongs_to_pipeline" { eslite_query("pipeline_steps", step_id).pipeline_id == pipeline_id }
+    property liveness "pipeline_eventually_terminal" { eventually(run.status in [PipelineStatus::Passed, PipelineStatus::Failed, PipelineStatus::Cancelled]) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let step = eslite_query("pipeline_steps", step_id)
+    let updated_step = PipelineStep {
+        ..step,
+        status: status,
+        exit_code: exit_code,
+        log_hash: log_hash,
+        finished_at: if status != StepStatus::Running { ts } else { 0 },
+        started_at: if step.started_at == 0 and status == StepStatus::Running { ts } else { step.started_at },
+        duration_ms: if status != StepStatus::Running and step.started_at > 0 { ts - step.started_at } else { 0 },
+    }
+    eslite_insert("pipeline_steps", step_id, updated_step)
+    let run = eslite_query("pipelines", pipeline_id)
+    let all_steps = map(run.steps, |sid| eslite_query("pipeline_steps", sid))
+    let any_failed = any(all_steps, |s| s.status == StepStatus::Failed)
+    let all_passed = all(all_steps, |s| s.status == StepStatus::Passed or s.status == StepStatus::Skipped)
+    let any_running = any(all_steps, |s| s.status == StepStatus::Running)
+    let new_status = if any_failed { PipelineStatus::Failed }
+                     else if all_passed { PipelineStatus::Passed }
+                     else if any_running { PipelineStatus::Running }
+                     else { run.status }
+    let is_terminal = new_status == PipelineStatus::Passed or new_status == PipelineStatus::Failed or new_status == PipelineStatus::Cancelled
+    let updated_run = PipelineRun {
+        ..run,
+        status: new_status,
+        finished_at: if is_terminal { ts } else { 0 },
+        duration_ms: if is_terminal { ts - run.started_at } else { 0 },
+    }
+    eslite_insert("pipelines", pipeline_id, updated_run)
+    emit(pipeline_events, updated_run)
+    updated_run
+}
+
+// --- Generate a signed badge for a pipeline ---
+circuit generate_badge(
+    repo_id: bytes(32),
+    pipeline_id: bytes(16),
+    label: string,
+    signing_sk: bytes(4896)
+) -> Badge
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/ci
+    precision C
+    constant_time true
+    observe metrics: [badges_generated, badge_status]
+    monitor "badge_generation_rate" { badges_generated < 1000 per 3600s }
+    invariant "pipeline_exists" { eslite_exists("pipelines", pipeline_id) }
+    invariant "pipeline_terminal" { eslite_query("pipelines", pipeline_id).status in [PipelineStatus::Passed, PipelineStatus::Failed, PipelineStatus::Cancelled] }
+    property safety "badge_reflects_pipeline_status" { badge.status == pipeline_status_string(run.status) }
+    property liveness "badge_eventually_signed" { eventually(len(badge.signature) == 4627) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, mldsa_sign, now]
+{
+    let ts = now()
+    let run = eslite_query("pipelines", pipeline_id)
+    let (status_str, color) = match run.status {
+        PipelineStatus::Passed => ("passing", "brightgreen"),
+        PipelineStatus::Failed => ("failing", "red"),
+        PipelineStatus::Cancelled => ("cancelled", "grey"),
+        _ => ("unknown", "lightgrey"),
+    }
+    let badge_seed = concat(repo_id, pipeline_id, encode_u64(ts))
+    let badge_id = bit_slice(sha3_256(badge_seed), 0, 128)
+    let badge_content = concat(badge_id, repo_id, pipeline_id, encode(status_str), encode_u64(ts))
+    let signature = mldsa_sign(signing_sk, sha3_256(badge_content))
+    let badge = Badge {
+        badge_id: badge_id,
+        repo_id: repo_id,
+        pipeline_id: pipeline_id,
+        label: label,
+        status: status_str,
+        color: color,
+        commit_id: run.commit_id,
+        branch: run.branch,
+        signature: signature,
+        generated_at: ts,
+    }
+    eslite_insert("badges", concat(repo_id, encode(label)), badge)
+    emit(badge_events, badge)
+    badge
+}
+
+// --- Cancel a running pipeline ---
+circuit cancel_pipeline(pipeline_id: bytes(16), actor: bytes(32)) -> PipelineRun
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/ci
+    precision C
+    observe metrics: [pipelines_cancelled]
+    monitor "cancellation_rate" { pipelines_cancelled < 100 per 3600s }
+    invariant "pipeline_exists" { eslite_exists("pipelines", pipeline_id) }
+    invariant "pipeline_cancellable" { eslite_query("pipelines", pipeline_id).status in [PipelineStatus::Queued, PipelineStatus::Running] }
+    property safety "cancelled_pipeline_is_terminal" { result.status == PipelineStatus::Cancelled }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let run = eslite_query("pipelines", pipeline_id)
+    for step_id in run.steps {
+        let step = eslite_query("pipeline_steps", step_id)
+        if step.status == StepStatus::Pending or step.status == StepStatus::Running {
+            eslite_insert("pipeline_steps", step_id, PipelineStep { ..step, status: StepStatus::Skipped, finished_at: ts })
+        }
+    }
+    let updated = PipelineRun {
+        ..run,
+        status: PipelineStatus::Cancelled,
+        finished_at: ts,
+        duration_ms: ts - run.started_at,
+    }
+    eslite_insert("pipelines", pipeline_id, updated)
+    emit(pipeline_events, updated)
+    updated
+}
+
+// ── Test annotations ────────────────────────────────────────────
+
+test golden "trigger_pipeline_basic" {
+    input {
+        repo_id: hex("aa" * 32)
+        commit_id: hex("bb" * 32)
+        branch: "main"
+        trigger: "push"
+        triggered_by: hex("cc" * 32)
+        step_names: ["build", "test", "lint"]
+        step_images: ["rust:latest", "rust:latest", "clippy:latest"]
+    }
+    assert {
+        result.pipeline_id != hex("00" * 16)
+        result.repo_id == hex("aa" * 32)
+        result.status == PipelineStatus::Queued
+        len(result.steps) == 3
+        result.started_at > 0
+    }
+}
+
+test golden "generate_badge_passing" {
+    setup {
+        let run = trigger_pipeline(hex("aa" * 32), hex("bb" * 32), "main", "push", hex("cc" * 32), ["build"], ["rust:latest"])
+        update_step(run.pipeline_id, run.steps[0], StepStatus::Passed, 0, hex("dd" * 32))
+    }
+    input {
+        repo_id: hex("aa" * 32)
+        pipeline_id: run.pipeline_id
+        label: "build"
+        signing_sk: hex("ee" * 4896)
+    }
+    assert {
+        result.status == "passing"
+        result.color == "brightgreen"
+        len(result.signature) == 4627
+    }
+}
+
+fuzz_target "pipeline_trigger_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        commit_id: bytes(32)
+        branch: string(1..256)
+        trigger: string(1..64)
+        triggered_by: bytes(32)
+        step_count: u8(1..20)
+    }
+    assert {
+        no_panic
+    }
+}
+
+fuzz_target "badge_signing_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        pipeline_id: bytes(16)
+        label: string(1..128)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

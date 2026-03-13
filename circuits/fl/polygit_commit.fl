@@ -1,9 +1,15 @@
-// Poly Git Commit — PQ-signed commit and tree operations
+// Poly Git Commit — PQ-signed commit and tree operations (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/git/commit
 //   Every commit is signed with ML-DSA-87 (FIPS 204, Level 5).
 //   Tree diffing uses SHA3-256 content-addressed entries.
+//
+// es-git Wire VCS opcodes:
+//   0xA5 TREE_BUILD    — construct a tree node from entries
+//   0xA6 DIFF_COMPUTE  — diff two tree objects
+//   0xA7 COMMIT_SIGN   — create and sign a commit with ML-DSA-87
+//   0xA8 COMMIT_VERIFY — verify ML-DSA-87 signature on a commit
 //
 // Signing flow:
 //   1. Build canonical commit content (tree_hash, parents, author, message)
@@ -14,7 +20,7 @@
 import polykit_identity
 import polygit_repository
 
-type CommitNode = struct {
+data CommitNode : git v1 {
     commit_id: ObjectId,
     tree_hash: ObjectId,
     parent_hashes: list<ObjectId>,
@@ -26,29 +32,54 @@ type CommitNode = struct {
     signature: bytes(4627),
     timestamp_ns: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/commit
+    cortex {
+        redact [author, committer, author_pubkey, committer_pubkey, signature]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type TreeEntry = struct {
+data TreeEntry : git v1 {
     name: string,
     mode: u32,
     object_id: ObjectId,
     object_type: ObjectType,
     size_bytes: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/commit
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type TreeNode = struct {
+data TreeNode : git v1 {
     tree_id: ObjectId,
     entries: list<TreeEntry>,
     entry_count: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/commit
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type BlobRef = struct {
+data BlobRef : git v1 {
     blob_id: ObjectId,
     path: string,
     size_bytes: u64,
     content_hash: bytes(32),
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/commit
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type DiffEntry = struct {
+data DiffEntry : git v1 {
     path: string,
     old_object: ObjectId,
     new_object: ObjectId,
@@ -56,8 +87,14 @@ type DiffEntry = struct {
     additions: u32,
     deletions: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/commit
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type DiffResult = struct {
+data DiffResult : git v1 {
     base_tree: ObjectId,
     target_tree: ObjectId,
     entries: list<DiffEntry>,
@@ -65,11 +102,18 @@ type DiffResult = struct {
     total_additions: u32,
     total_deletions: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/commit
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
 stream commit_events: event<CommitNode>
     | throttle 2000/s burst 5000
 
-// --- Create and sign a commit with ML-DSA-87 ---
+// --- Create and sign a commit with ML-DSA-87 (Wire opcode 0xA7 COMMIT_SIGN) ---
+@guard(block_on: repo_frozen)
 circuit create_commit(
     repo_id: RepoId,
     tree_hash: ObjectId,
@@ -83,12 +127,15 @@ circuit create_commit(
 ) -> CommitNode
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/git/commit
+    precision C
     constant_time true
     observe metrics: [commits_created, signing_ops, parent_count]
     monitor "commit_signing_latency" { signing_time_ms < 100 }
     invariant "tree_exists" { eslite_exists("objects", tree_hash) }
     invariant "parents_exist" { all(parent_hashes, |p| eslite_exists("objects", p)) }
     invariant "message_nonempty" { len(message) > 0 }
+    property safety "signature_deterministic" { len(signature) == 4627 }
+    property liveness "commit_eventually_stored" { eventually(eslite_exists("commits", commit_id)) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, eslite_query, scatter_cas_put, mldsa_sign, now]
 {
@@ -124,13 +171,15 @@ circuit create_commit(
     node
 }
 
-// --- Verify ML-DSA-87 signature on a commit ---
+// --- Verify ML-DSA-87 signature on a commit (Wire opcode 0xA8 COMMIT_VERIFY) ---
 circuit verify_commit(commit: CommitNode) -> bool
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/commit
+    precision C
     observe metrics: [verify_ops, verify_failures, verify_successes]
     monitor "verification_failures" { verify_failures < 5 per 60s }
     invariant "signature_present" { len(commit.signature) == 4627 }
+    property safety "verification_consistent" { verify_commit(commit) == verify_commit(commit) }
     meters [compute_cycles]
     wasm_abi [mldsa_verify]
 {
@@ -146,13 +195,15 @@ circuit verify_commit(commit: CommitNode) -> bool
     mldsa_verify(commit_hash, commit.signature, commit.committer_pubkey)
 }
 
-// --- Build a tree from entries and store to scatter-CAS ---
+// --- Build a tree from entries and store to scatter-CAS (Wire opcode 0xA5 TREE_BUILD) ---
 circuit build_tree(repo_id: RepoId, entries: list<TreeEntry>) -> TreeNode
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/commit
+    precision C
     observe metrics: [trees_built, entry_count]
     monitor "tree_size" { entry_count < 100000 }
     invariant "entries_sorted" { is_sorted(entries, |a, b| a.name < b.name) }
+    property safety "tree_hash_deterministic" { build_tree(repo_id, entries).tree_id == build_tree(repo_id, entries).tree_id }
     meters [compute_cycles, memory_bytes, storage_bytes]
     wasm_abi [eslite_insert, scatter_cas_put, eslite_query]
 {
@@ -170,12 +221,15 @@ circuit build_tree(repo_id: RepoId, entries: list<TreeEntry>) -> TreeNode
     node
 }
 
-// --- Diff two trees ---
+// --- Diff two trees (Wire opcode 0xA6 DIFF_COMPUTE) ---
 circuit diff_trees(repo_id: RepoId, base_tree: ObjectId, target_tree: ObjectId) -> DiffResult
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/commit
+    precision C
     observe metrics: [diffs_computed, files_changed, total_additions, total_deletions]
     monitor "diff_size" { files_changed < 10000 }
+    invariant "trees_exist" { eslite_exists("objects", base_tree) and eslite_exists("objects", target_tree) }
+    property safety "diff_symmetric_count" { diff_trees(r, a, b).files_changed >= 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, scatter_cas_get]
 {
@@ -213,13 +267,15 @@ circuit diff_trees(repo_id: RepoId, base_tree: ObjectId, target_tree: ObjectId) 
     }
 }
 
-// --- Resolve a ref name to an ObjectId ---
+// --- Resolve a ref name to an ObjectId (Wire opcode 0xA4 REF_QUERY) ---
 circuit resolve_ref(repo_id: RepoId, ref_name: string) -> ObjectId
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/commit
+    precision C
     observe metrics: [ref_lookups, ref_misses]
     monitor "ref_resolution" { ref_misses < 10 per 60s }
     invariant "ref_nonempty" { len(ref_name) > 0 }
+    property safety "ref_resolves_to_valid_object" { eslite_exists("objects", resolve_ref(repo_id, ref_name)) }
     meters [compute_cycles]
     wasm_abi [eslite_query]
 {

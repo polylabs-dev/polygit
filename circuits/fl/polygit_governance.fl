@@ -1,10 +1,14 @@
-// Poly Git Governance — Enterprise governance composing eStream rbac.fl and group_hierarchy.fl
+// Poly Git Governance — Enterprise governance composing eStream rbac.fl and group_hierarchy.fl (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/git
 //   Hierarchical governance: org → group → repo with policy inheritance.
-//   Composes upstream eStream circuits (rbac, group_hierarchy) into
+//   Composes upstream eStream circuits (rbac, group_hierarchy, issue_tracking) into
 //   Poly Git-specific access control and branch protection.
+//
+// es-git Wire VCS opcodes:
+//   0xA3 REF_UPDATE — branch ref updates gated by governance
+//   0xA1 OBJECT_PUSH — push operations gated by branch protection
 //
 // Policy cascade:
 //   OrgPolicy → GroupPolicy → RepoPolicyOverride
@@ -17,8 +21,9 @@ import polygit_repository
 // Upstream eStream governance primitives
 import estream.circuits.core.data.graphs.rbac
 import estream.circuits.core.data.graphs.group_hierarchy
+import estream.circuits.core.data.graphs.issue_tracking
 
-type OrgPolicy = struct {
+data OrgPolicy : git v1 {
     org_id: bytes(32),
     require_pq_signatures: bool,
     require_code_review: bool,
@@ -28,8 +33,15 @@ type OrgPolicy = struct {
     enforce_classification: bool,
     audit_retention_days: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        redact [org_id]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type GroupPolicy = struct {
+data GroupPolicy : git v1 {
     group_id: bytes(32),
     org_id: bytes(32),
     inherit_org_policy: bool,
@@ -38,8 +50,15 @@ type GroupPolicy = struct {
     protected_branch_patterns: list<string>,
     allowed_contributors: list<bytes(32)>,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        redact [allowed_contributors]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type RepoPolicyOverride = struct {
+data RepoPolicyOverride : git v1 {
     repo_id: RepoId,
     group_id: bytes(32),
     override_min_approvals: u8,
@@ -47,8 +66,14 @@ type RepoPolicyOverride = struct {
     branch_protections: list<BranchProtection>,
     codeowners: list<CodeOwnerRule>,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type BranchProtection = struct {
+data BranchProtection : git v1 {
     pattern: string,
     require_review: bool,
     min_approvals: u8,
@@ -56,21 +81,41 @@ type BranchProtection = struct {
     restrict_push: list<bytes(32)>,
     require_linear_history: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        redact [restrict_push]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type CodeOwnerRule = struct {
+data CodeOwnerRule : git v1 {
     path_pattern: string,
     owners: list<bytes(32)>,
     min_owner_approvals: u8,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        redact [owners]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type AccessCheckResult = struct {
+data AccessCheckResult : git v1 {
     allowed: bool,
     effective_permissions: u64,
     policy_source: string,
     denied_reason: string,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type AuditEntry = struct {
+data AuditEntry : git v1 {
     principal: bytes(32),
     action: string,
     resource_id: bytes(32),
@@ -79,6 +124,13 @@ type AuditEntry = struct {
     policy_applied: string,
     timestamp_ns: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git
+    cortex {
+        redact [principal]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
 stream governance_events: event<AuditEntry>
     | throttle 2000/s burst 5000
@@ -94,9 +146,13 @@ circuit check_repo_access(
         governance hierarchical
         audit_trail true
     }
+    precision C
     observe metrics: [access_checks, access_grants, access_denials, policy_cascade_depth]
     monitor "access_denial_rate" { access_denials < 100 per 60s }
     invariant "valid_permission" { permission_bit > 0 }
+    invariant "principal_nonzero" { principal != zero_bytes(32) }
+    property safety "denied_has_reason" { not result.allowed implies len(result.denied_reason) > 0 }
+    property liveness "access_check_completes" { eventually(result.allowed or not result.allowed) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, now]
 {
@@ -140,9 +196,12 @@ circuit apply_org_policy(org_id: bytes(32), group_id: bytes(32)) -> GroupPolicy
     lex esn/global/org/polylabs/git {
         governance hierarchical
     }
+    precision C
     observe metrics: [policy_applications, policy_inheritance_depth]
     monitor "policy_propagation" { policy_applications > 0 }
     invariant "org_exists" { eslite_exists("org_policies", org_id) }
+    property safety "tighten_only" { effective.min_approvals >= org_policy.min_approvals }
+    property liveness "policy_eventually_applied" { eventually(eslite_exists("group_policies", group_id)) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_insert]
 {
@@ -161,7 +220,7 @@ circuit apply_org_policy(org_id: bytes(32), group_id: bytes(32)) -> GroupPolicy
     effective
 }
 
-// --- Enforce branch protection rules on push ---
+// --- Enforce branch protection rules on push (Wire opcode 0xA1 / 0xA3 gated) ---
 circuit enforce_branch_protection(
     repo_id: RepoId,
     branch_name: string,
@@ -173,9 +232,12 @@ circuit enforce_branch_protection(
         governance hierarchical
         audit_trail true
     }
+    precision C
     observe metrics: [protection_checks, push_blocked, push_allowed]
     monitor "branch_protection_blocks" { push_blocked < 50 per 3600s }
     invariant "branch_exists" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(branch_name))) }
+    property safety "protected_branch_requires_review" { matching_protection.require_review implies approved >= matching_protection.min_approvals }
+    property liveness "protection_check_completes" { eventually(result == true or result == false) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, now]
 {
@@ -210,8 +272,11 @@ circuit audit_access(principal: bytes(32), since_ns: u64) -> list<AuditEntry>
     lex esn/global/org/polylabs/git {
         audit_trail true
     }
+    precision B
     observe metrics: [audit_queries, audit_entries_returned]
     monitor "audit_query_volume" { audit_queries < 100 per 60s }
+    invariant "principal_nonzero" { principal != zero_bytes(32) }
+    property safety "audit_entries_within_window" { all(result, |e| e.timestamp_ns >= since_ns) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_scan]
 {

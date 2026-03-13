@@ -1,9 +1,14 @@
-// Poly Git Review — Cortex AI-powered code review with Blessed Repo pattern
+// Poly Git Review — Cortex AI-powered code review with Blessed Repo pattern (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/git/review
 //   sub_lex review_session fan_in — per-review session telemetry
 //   AI-powered diff evaluation via Cortex ESLM with anomaly detection.
+//
+// es-git Wire VCS opcodes:
+//   0xAA REVIEW_SUBMIT  — submit a review request for a commit
+//   0xAB REVIEW_APPROVE — approve a commit with ML-DSA-87 signed review
+//   0xAC PROMOTE_BLESSED — promote a commit to the blessed repository
 //
 // Blessed Repo pattern:
 //   Commits must pass N-of-M reviewer approvals before promotion to blessed.
@@ -22,7 +27,7 @@ type ReviewStatus = enum {
     Blocked,
 }
 
-type ReviewRequest = struct {
+data ReviewRequest : git v1 {
     review_id: bytes(16),
     repo_id: RepoId,
     commit_id: ObjectId,
@@ -32,8 +37,15 @@ type ReviewRequest = struct {
     diff_hash: bytes(32),
     created_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/review
+    cortex {
+        redact [author]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type ReviewResult = struct {
+data ReviewResult : git v1 {
     review_id: bytes(16),
     reviewer: bytes(32),
     reviewer_pubkey: bytes(2592),
@@ -43,8 +55,15 @@ type ReviewResult = struct {
     signature: bytes(4627),
     reviewed_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/review
+    cortex {
+        redact [reviewer, reviewer_pubkey, signature]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type AiEvaluation = struct {
+data AiEvaluation : git v1 {
     diff_hash: bytes(32),
     risk_score: u16,
     complexity_score: u16,
@@ -54,8 +73,14 @@ type AiEvaluation = struct {
     summary: string,
     confidence: u16,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/review
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type BlessedPromotion = struct {
+data BlessedPromotion : git v1 {
     commit_id: ObjectId,
     repo_id: RepoId,
     approvals: list<ReviewResult>,
@@ -64,8 +89,15 @@ type BlessedPromotion = struct {
     promoted_at: u64,
     promotion_signature: bytes(4627),
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/review
+    cortex {
+        redact [promotion_signature]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type ReviewPolicy = struct {
+data ReviewPolicy : git v1 {
     repo_id: RepoId,
     required_approvals: u8,
     require_ai_review: bool,
@@ -74,6 +106,30 @@ type ReviewPolicy = struct {
     codeowner_paths: list<string>,
     block_on_security_flags: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/review
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+// ── Review lifecycle state machine ──────────────────────────────
+
+state_machine review_lifecycle {
+    initial Draft
+    persistence wal
+    terminal [Merged, Closed, Abandoned]
+    ai_anomaly_detection true
+
+    Draft -> Open when submit_review
+    Open -> InReview when reviewer_assigned
+    InReview -> Approved when approvals_met guard min_approvals_reached
+    InReview -> Open when changes_requested
+    Approved -> Merged when merge_executed guard branch_protection_passed
+    Open -> Closed when author_closed or maintainer_closed
+    Draft -> Closed when author_closed
+    * -> Abandoned when stale_timeout guard inactive_days > 90
+}
 
 stream review_events: event<ReviewResult>
     | throttle 1000/s burst 2000
@@ -81,7 +137,7 @@ stream review_events: event<ReviewResult>
 stream promotion_events: event<BlessedPromotion>
     | throttle 100/s burst 200
 
-// --- Submit a review request for a commit ---
+// --- Submit a review request for a commit (Wire opcode 0xAA REVIEW_SUBMIT) ---
 circuit submit_review(
     repo_id: RepoId,
     commit_id: ObjectId,
@@ -93,10 +149,13 @@ circuit submit_review(
     lex esn/global/org/polylabs/git/review {
         sub_lex review_session fan_in
     }
+    precision C
     observe metrics: [reviews_submitted, review_queue_depth]
     monitor "review_queue" { review_queue_depth < 1000 }
     invariant "commit_exists" { eslite_exists("commits", commit_id) }
     invariant "branches_differ" { source_branch != target_branch }
+    property safety "review_author_matches_commit" { author != zero_bytes(32) }
+    property liveness "review_eventually_stored" { eventually(eslite_exists("reviews", review_id)) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, eslite_query, now]
 {
@@ -125,6 +184,7 @@ circuit evaluate_diff(repo_id: RepoId, review_id: bytes(16), diff: DiffResult) -
     lex esn/global/org/polylabs/git/review {
         sub_lex review_session fan_in
     }
+    precision C
     ai_feed code_review_anomaly {
         model cortex_eslm
         context [diff_entries, file_history, test_manifest]
@@ -134,6 +194,7 @@ circuit evaluate_diff(repo_id: RepoId, review_id: bytes(16), diff: DiffResult) -
     monitor "ai_evaluation_latency" { evaluation_latency_ms < 5000 }
     monitor "high_risk_commits" { risk_scores > 800 }
     invariant "diff_nonempty" { diff.files_changed > 0 }
+    property safety "ai_evaluation_bounded_risk" { risk_score >= 0 and risk_score <= 1000 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, cortex_infer, now]
 {
@@ -161,7 +222,7 @@ circuit evaluate_diff(repo_id: RepoId, review_id: bytes(16), diff: DiffResult) -
     }
 }
 
-// --- Approve a commit with ML-DSA-87 signed review ---
+// --- Approve a commit with ML-DSA-87 signed review (Wire opcode 0xAB REVIEW_APPROVE) ---
 circuit approve_commit(
     review_id: bytes(16),
     reviewer: bytes(32),
@@ -173,11 +234,14 @@ circuit approve_commit(
     lex esn/global/org/polylabs/git/review {
         sub_lex review_session fan_in
     }
+    precision C
     constant_time true
     observe metrics: [approvals_granted, approvals_with_risk, signing_ops]
     monitor "approval_signing" { signing_ops > 0 }
     invariant "review_exists" { eslite_exists("reviews", review_id) }
     invariant "not_self_review" { reviewer != eslite_query("reviews", review_id).author }
+    property safety "self_review_blocked" { reviewer != eslite_query("reviews", review_id).author }
+    property liveness "approval_eventually_recorded" { eventually(eslite_exists("review_results", concat(review_id, reviewer))) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, eslite_query, mldsa_sign, stream_emit, now]
 {
@@ -203,7 +267,7 @@ circuit approve_commit(
     result
 }
 
-// --- Promote a commit to the blessed repository ---
+// --- Promote a commit to the blessed repository (Wire opcode 0xAC PROMOTE_BLESSED) ---
 circuit promote_to_blessed(
     repo_id: RepoId,
     commit_id: ObjectId,
@@ -212,10 +276,13 @@ circuit promote_to_blessed(
 ) -> BlessedPromotion
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/git/review
+    precision C
     constant_time true
     observe metrics: [promotions, promotion_failures, approval_counts]
     monitor "promotion_gate" { promotion_failures < 5 per 3600s }
     invariant "commit_reviewed" { has_reviews(commit_id) }
+    property safety "promotion_requires_sufficient_approvals" { len(verified) >= policy.required_approvals }
+    property liveness "blessed_eventually_recorded" { eventually(eslite_exists("blessed", concat(repo_id, commit_id))) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_scan, eslite_insert, mldsa_sign, mldsa_verify, now]
 {
@@ -252,9 +319,11 @@ circuit promote_to_blessed(
 circuit check_review_policy(repo_id: RepoId, commit_id: ObjectId) -> bool
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/review
+    precision C
     observe metrics: [policy_checks, policy_violations]
     monitor "policy_violations" { policy_violations < 10 per 3600s }
     invariant "policy_exists" { eslite_exists("review_policies", repo_id) }
+    property safety "blocked_review_never_passes" { has_blocks implies result == false }
     meters [compute_cycles]
     wasm_abi [eslite_query, eslite_scan]
 {

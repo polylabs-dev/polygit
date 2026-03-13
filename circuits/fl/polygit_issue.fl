@@ -1,0 +1,459 @@
+// Poly Git Issue Tracking — Issue lifecycle composing eStream issue_tracking.fl (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/issues
+//   Issue tracking with state machine lifecycle, labels, milestones, and
+//   blocking dependencies. Composes eStream's issue_tracking.fl patterns
+//   for anomaly detection and lifecycle governance.
+//
+// es-git Wire VCS opcodes:
+//   Issues are metadata-layer objects, not part of the git object model.
+//   They reference commits via commit_id linkage but are stored in the
+//   issue namespace, not in scatter-CAS.
+
+import polykit_identity
+import polygit_repository
+import polygit_commit
+
+// Upstream eStream issue tracking
+import estream.circuits.core.data.graphs.issue_tracking
+
+// ── Data declarations ───────────────────────────────────────────
+
+type IssuePriority = enum {
+    Critical,
+    High,
+    Medium,
+    Low,
+    Trivial,
+}
+
+type IssueState = enum {
+    Open,
+    InProgress,
+    Blocked,
+    Closed,
+    Duplicate,
+}
+
+data Issue : git v1 {
+    issue_id: bytes(16),
+    repo_id: bytes(32),
+    number: u32,
+    title: string,
+    body: string,
+    author: bytes(32),
+    assignees: list<bytes(32)>,
+    labels: list<bytes(16)>,
+    milestone_id: bytes(16),
+    priority: IssuePriority,
+    state: IssueState,
+    linked_commits: list<bytes(32)>,
+    blocking: list<bytes(16)>,
+    blocked_by: list<bytes(16)>,
+    created_at: u64,
+    updated_at: u64,
+    closed_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/issues
+    cortex {
+        redact [author, assignees]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data IssueComment : git v1 {
+    comment_id: bytes(16),
+    issue_id: bytes(16),
+    author: bytes(32),
+    body: string,
+    reaction_counts: list<u32>,
+    created_at: u64,
+    updated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/issues
+    cortex {
+        redact [author]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data IssueLabel : git v1 {
+    label_id: bytes(16),
+    repo_id: bytes(32),
+    name: string,
+    color: string,
+    description: string,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/issues
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data Milestone : git v1 {
+    milestone_id: bytes(16),
+    repo_id: bytes(32),
+    title: string,
+    description: string,
+    due_date: u64,
+    open_issues: u32,
+    closed_issues: u32,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/issues
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+// ── Issue lifecycle state machine ───────────────────────────────
+
+state_machine issue_fsm {
+    initial Open
+    persistence wal
+    terminal [Closed, Duplicate]
+    ai_anomaly_detection true
+
+    Open -> InProgress when assigned
+    Open -> Blocked when dependency_blocked
+    Open -> Closed when author_closed or maintainer_closed
+    Open -> Duplicate when marked_duplicate guard linked_issue_exists
+    InProgress -> Blocked when dependency_blocked
+    InProgress -> Open when unassigned
+    InProgress -> Closed when resolved guard has_linked_commit
+    Blocked -> Open when dependency_resolved
+    Blocked -> InProgress when dependency_resolved and has_assignee
+    Blocked -> Closed when maintainer_closed
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream issue_events: event<Issue>
+    retention 7y
+    consumers [governance, audit, streamsight]
+
+stream comment_events: event<IssueComment>
+    retention 7y
+    consumers [audit]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+// --- Create a new issue ---
+circuit create_issue(
+    repo_id: bytes(32),
+    title: string,
+    body: string,
+    author: bytes(32),
+    priority: IssuePriority,
+    labels: list<bytes(16)>,
+    milestone_id: bytes(16)
+) -> Issue
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/issues
+    precision C
+    observe metrics: [issues_created, issue_priority, issues_per_repo]
+    monitor "issue_creation_rate" { issues_created < 500 per 3600s }
+    invariant "title_nonempty" { len(title) > 0 }
+    invariant "repo_exists" { eslite_exists("repos", repo_id) }
+    property safety "issue_starts_open" { result.state == IssueState::Open }
+    property liveness "issue_eventually_stored" { eventually(eslite_exists("issues", issue_id)) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let ts = now()
+    let issue_count = eslite_query("issue_counters", repo_id)
+    let number = if issue_count != null { issue_count + 1 } else { 1 }
+    eslite_insert("issue_counters", repo_id, number)
+    let issue_seed = concat(repo_id, encode_u32(number), encode_u64(ts))
+    let issue_id = bit_slice(sha3_256(issue_seed), 0, 128)
+    let issue = Issue {
+        issue_id: issue_id,
+        repo_id: repo_id,
+        number: number,
+        title: title,
+        body: body,
+        author: author,
+        assignees: [],
+        labels: labels,
+        milestone_id: milestone_id,
+        priority: priority,
+        state: IssueState::Open,
+        linked_commits: [],
+        blocking: [],
+        blocked_by: [],
+        created_at: ts,
+        updated_at: ts,
+        closed_at: 0,
+    }
+    eslite_insert("issues", issue_id, issue)
+    eslite_insert("issue_by_number", concat(repo_id, encode_u32(number)), issue_id)
+    if milestone_id != zero_bytes(16) {
+        let milestone = eslite_query("milestones", milestone_id)
+        if milestone != null {
+            eslite_insert("milestones", milestone_id, Milestone { ..milestone, open_issues: milestone.open_issues + 1 })
+        }
+    }
+    emit(issue_events, issue)
+    issue
+}
+
+// --- Update an existing issue ---
+circuit update_issue(
+    issue_id: bytes(16),
+    actor: bytes(32),
+    title: string,
+    body: string,
+    priority: IssuePriority,
+    assignees: list<bytes(32)>,
+    labels: list<bytes(16)>
+) -> Issue
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/issues
+    precision C
+    observe metrics: [issues_updated, fields_changed]
+    monitor "issue_update_rate" { issues_updated < 1000 per 3600s }
+    invariant "issue_exists" { eslite_exists("issues", issue_id) }
+    invariant "not_terminal" { eslite_query("issues", issue_id).state != IssueState::Closed and eslite_query("issues", issue_id).state != IssueState::Duplicate }
+    property safety "closed_issues_immutable" { issue.state != IssueState::Closed and issue.state != IssueState::Duplicate }
+    property liveness "update_eventually_persisted" { eventually(eslite_query("issues", issue_id).updated_at >= ts) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let issue = eslite_query("issues", issue_id)
+    let was_unassigned = len(issue.assignees) == 0
+    let updated = Issue {
+        ..issue,
+        title: if len(title) > 0 { title } else { issue.title },
+        body: if len(body) > 0 { body } else { issue.body },
+        priority: priority,
+        assignees: assignees,
+        labels: labels,
+        updated_at: ts,
+    }
+    if was_unassigned and len(assignees) > 0 and issue.state == IssueState::Open {
+        updated = Issue { ..updated, state: IssueState::InProgress }
+    }
+    eslite_insert("issues", issue_id, updated)
+    emit(issue_events, updated)
+    updated
+}
+
+// --- Close an issue ---
+circuit close_issue(
+    issue_id: bytes(16),
+    actor: bytes(32),
+    reason: string,
+    linked_commit: bytes(32),
+    is_duplicate: bool,
+    duplicate_of: bytes(16)
+) -> Issue
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/issues
+    precision C
+    observe metrics: [issues_closed, close_reason, resolution_time_ms]
+    monitor "issue_closure_rate" { issues_closed < 200 per 3600s }
+    invariant "issue_exists" { eslite_exists("issues", issue_id) }
+    invariant "not_already_closed" { eslite_query("issues", issue_id).state != IssueState::Closed }
+    property safety "closed_issue_has_timestamp" { result.closed_at > 0 }
+    property liveness "blocking_issues_unblocked" { all(issue.blocking, |b| eslite_query("issues", b).state != IssueState::Blocked) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let issue = eslite_query("issues", issue_id)
+    let new_state = if is_duplicate { IssueState::Duplicate } else { IssueState::Closed }
+    let linked = if linked_commit != zero_bytes(32) {
+        concat_list(issue.linked_commits, [linked_commit])
+    } else {
+        issue.linked_commits
+    }
+    let closed = Issue {
+        ..issue,
+        state: new_state,
+        linked_commits: linked,
+        updated_at: ts,
+        closed_at: ts,
+    }
+    eslite_insert("issues", issue_id, closed)
+    if issue.milestone_id != zero_bytes(16) {
+        let milestone = eslite_query("milestones", issue.milestone_id)
+        if milestone != null {
+            eslite_insert("milestones", issue.milestone_id, Milestone {
+                ..milestone,
+                open_issues: milestone.open_issues - 1,
+                closed_issues: milestone.closed_issues + 1,
+            })
+        }
+    }
+    for blocked_id in issue.blocking {
+        let blocked = eslite_query("issues", blocked_id)
+        if blocked != null and blocked.state == IssueState::Blocked {
+            let remaining_blockers = filter(blocked.blocked_by, |b| b != issue_id)
+            if len(remaining_blockers) == 0 {
+                let unblocked_state = if len(blocked.assignees) > 0 { IssueState::InProgress } else { IssueState::Open }
+                eslite_insert("issues", blocked_id, Issue { ..blocked, state: unblocked_state, blocked_by: [], updated_at: ts })
+            } else {
+                eslite_insert("issues", blocked_id, Issue { ..blocked, blocked_by: remaining_blockers, updated_at: ts })
+            }
+        }
+    }
+    emit(issue_events, closed)
+    closed
+}
+
+// --- Add a comment to an issue ---
+circuit add_comment(
+    issue_id: bytes(16),
+    author: bytes(32),
+    body: string
+) -> IssueComment
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/issues
+    precision C
+    observe metrics: [comments_created, comments_per_issue]
+    monitor "comment_rate" { comments_created < 2000 per 3600s }
+    invariant "issue_exists" { eslite_exists("issues", issue_id) }
+    invariant "body_nonempty" { len(body) > 0 }
+    property safety "comment_linked_to_valid_issue" { eslite_exists("issues", issue_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let ts = now()
+    let comment_seed = concat(issue_id, author, encode_u64(ts))
+    let comment_id = bit_slice(sha3_256(comment_seed), 0, 128)
+    let comment = IssueComment {
+        comment_id: comment_id,
+        issue_id: issue_id,
+        author: author,
+        body: body,
+        reaction_counts: [],
+        created_at: ts,
+        updated_at: ts,
+    }
+    eslite_insert("issue_comments", comment_id, comment)
+    let issue = eslite_query("issues", issue_id)
+    eslite_insert("issues", issue_id, Issue { ..issue, updated_at: ts })
+    emit(comment_events, comment)
+    comment
+}
+
+// --- Create a label ---
+circuit create_label(repo_id: bytes(32), name: string, color: string, description: string) -> IssueLabel
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/issues
+    precision B
+    observe metrics: [labels_created]
+    monitor "label_creation_rate" { labels_created < 200 per 3600s }
+    invariant "name_nonempty" { len(name) > 0 }
+    invariant "color_valid" { len(color) == 6 or len(color) == 7 }
+    property safety "label_name_unique_per_repo" { not eslite_exists("labels_by_name", concat(repo_id, encode(name))) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now()
+    let label_seed = concat(repo_id, encode(name), encode_u64(ts))
+    let label_id = bit_slice(sha3_256(label_seed), 0, 128)
+    let label = IssueLabel {
+        label_id: label_id,
+        repo_id: repo_id,
+        name: name,
+        color: color,
+        description: description,
+        created_at: ts,
+    }
+    eslite_insert("labels", label_id, label)
+    eslite_insert("labels_by_name", concat(repo_id, encode(name)), label_id)
+    label
+}
+
+// ── Test annotations ────────────────────────────────────────────
+
+test golden "create_issue_basic" {
+    setup {
+        eslite_insert("repos", hex("aa" * 32), RepoConfig {
+            repo_id: hex("aa" * 32),
+            org_id: hex("bb" * 32),
+            name: "test-repo",
+            default_branch: "main",
+            scatter_k: 3,
+            scatter_n: 5,
+            classification: "internal",
+            created_at: 1000,
+            owner_pubkey: hex("cc" * 2592),
+        })
+    }
+    input {
+        repo_id: hex("aa" * 32)
+        title: "Fix login bug"
+        body: "Users cannot log in when..."
+        author: hex("dd" * 32)
+        priority: IssuePriority::High
+        labels: []
+        milestone_id: hex("00" * 16)
+    }
+    assert {
+        result.issue_id != hex("00" * 16)
+        result.number == 1
+        result.title == "Fix login bug"
+        result.state == IssueState::Open
+        result.created_at > 0
+    }
+}
+
+test golden "close_issue_basic" {
+    setup {
+        let issue = create_issue(hex("aa" * 32), "Bug", "desc", hex("dd" * 32), IssuePriority::Medium, [], hex("00" * 16))
+    }
+    input {
+        issue_id: issue.issue_id
+        actor: hex("dd" * 32)
+        reason: "fixed"
+        linked_commit: hex("ee" * 32)
+        is_duplicate: false
+        duplicate_of: hex("00" * 16)
+    }
+    assert {
+        result.state == IssueState::Closed
+        result.closed_at > 0
+        len(result.linked_commits) == 1
+    }
+}
+
+test golden "issue_lifecycle_assign" {
+    setup {
+        let issue = create_issue(hex("aa" * 32), "Feature request", "desc", hex("dd" * 32), IssuePriority::Low, [], hex("00" * 16))
+    }
+    input {
+        issue_id: issue.issue_id
+        actor: hex("dd" * 32)
+        title: ""
+        body: ""
+        priority: IssuePriority::Low
+        assignees: [hex("ee" * 32)]
+        labels: []
+    }
+    assert {
+        result.state == IssueState::InProgress
+        len(result.assignees) == 1
+    }
+}
+
+fuzz_target "issue_lifecycle_fuzz" {
+    inputs {
+        repo_id: bytes(32)
+        title: string(1..512)
+        body: string(0..4096)
+        author: bytes(32)
+        priority: u8(0..4)
+    }
+    assert {
+        no_panic
+    }
+}

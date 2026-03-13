@@ -1,0 +1,431 @@
+// Poly Git RBAC — Role-based access control graph for git operations (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/rbac
+//   Fine-grained RBAC with role hierarchy: Owner > Maintainer > Developer > Reporter > Guest
+//   Composes eStream's rbac.fl for bitmask permission resolution with role inheritance.
+//
+// es-git Wire VCS opcodes gated:
+//   0xA0 REPO_INIT    — requires Owner or Maintainer
+//   0xA1 OBJECT_PUSH  — requires Developer or above
+//   0xA3 REF_UPDATE   — requires Developer (non-protected) or Maintainer (protected)
+//   0xA9 MERGE_EXEC   — requires Maintainer or above
+//   0xAB REVIEW_APPROVE — requires Developer or above (non-self)
+//   0xAC PROMOTE_BLESSED — requires Maintainer or above
+//
+// Permission bitmask:
+//   bit 0: can_read       (0x01)
+//   bit 1: can_push       (0x02)
+//   bit 2: can_merge      (0x04)
+//   bit 3: can_admin      (0x08)
+//   bit 4: can_create_branch (0x10)
+//   bit 5: can_delete_branch (0x20)
+//   bit 6: can_manage_ci  (0x40)
+//   bit 7: can_manage_lfs (0x80)
+
+import polykit_identity
+import polygit_repository
+import polygit_commit
+
+// Upstream eStream RBAC
+import estream.circuits.core.data.graphs.rbac
+import estream.circuits.core.data.graphs.group_hierarchy
+
+// ── Role definitions ────────────────────────────────────────────
+
+type GitRole = enum {
+    Owner,
+    Maintainer,
+    Developer,
+    Reporter,
+    Guest,
+}
+
+// ── Data declarations ───────────────────────────────────────────
+
+data UserInfo : git v1 {
+    user_id: bytes(32),
+    pubkey: bytes(2592),
+    display_name: string,
+    email: string,
+    role: GitRole,
+    permissions: u64,
+    active: bool,
+    created_at: u64,
+    last_active_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/rbac
+    cortex {
+        redact [email, pubkey]
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data RepoInfo : git v1 {
+    repo_id: bytes(32),
+    name: string,
+    org_id: bytes(32),
+    group_id: bytes(32),
+    visibility: u8,
+    default_branch: string,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/rbac
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data BranchInfo : git v1 {
+    branch_id: bytes(32),
+    repo_id: bytes(32),
+    name: string,
+    protected: bool,
+    protection_level: u8,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/rbac
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data RoleAssignment : git v1 {
+    assignment_id: bytes(16),
+    user_id: bytes(32),
+    resource_id: bytes(32),
+    resource_type: string,
+    role: GitRole,
+    permissions: u64,
+    granted_by: bytes(32),
+    granted_at: u64,
+    expires_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/rbac
+    cortex {
+        redact [granted_by]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+// ── RBAC Graph ──────────────────────────────────────────────────
+
+graph git_roles {
+    node User : UserInfo
+    node Repo : RepoInfo
+    node Branch : BranchInfo
+
+    edge contributes_to : User -> Repo
+    edge maintains : User -> Repo
+    edge protects : User -> Branch
+
+    overlay permissions on User {
+        can_push,
+        can_merge,
+        can_admin,
+        can_create_branch,
+    }
+
+    storage csr {
+        tier bram { capacity: 10_000 },
+        tier ddr { capacity: 1_000_000 },
+    }
+
+    sign ml_dsa_87
+
+    ai_feed contribution_patterns
+}
+
+// ── Role permission map ─────────────────────────────────────────
+
+const OWNER_PERMISSIONS: u64 = 0xFF
+const MAINTAINER_PERMISSIONS: u64 = 0x7F
+const DEVELOPER_PERMISSIONS: u64 = 0x13
+const REPORTER_PERMISSIONS: u64 = 0x01
+const GUEST_PERMISSIONS: u64 = 0x01
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream rbac_events: event<RoleAssignment>
+    retention 7y
+    consumers [governance, audit, streamsight]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+// --- Assign a role to a user for a resource ---
+@guard(block_on: role_assignment_limit_exceeded)
+circuit assign_role(
+    granter: bytes(32),
+    granter_pubkey: bytes(2592),
+    user_id: bytes(32),
+    resource_id: bytes(32),
+    resource_type: string,
+    role: GitRole,
+    signing_sk: bytes(4896),
+    expires_at: u64
+) -> RoleAssignment
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/rbac
+    precision C
+    constant_time true
+    observe metrics: [roles_assigned, role_type, resource_type_assigned]
+    monitor "role_assignment_rate" { roles_assigned < 200 per 3600s }
+    invariant "granter_authorized" { has_admin_permission(granter, resource_id) }
+    invariant "user_exists" { user_id != zero_bytes(32) }
+    invariant "valid_expiry" { expires_at == 0 or expires_at > now() }
+    property safety "granter_must_be_admin" { has_admin_permission(granter, resource_id) }
+    property liveness "assignment_eventually_stored" { eventually(eslite_exists("role_assignments", assignment_id)) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, mldsa_sign, now]
+{
+    let ts = now()
+    let permissions = match role {
+        GitRole::Owner => OWNER_PERMISSIONS,
+        GitRole::Maintainer => MAINTAINER_PERMISSIONS,
+        GitRole::Developer => DEVELOPER_PERMISSIONS,
+        GitRole::Reporter => REPORTER_PERMISSIONS,
+        GitRole::Guest => GUEST_PERMISSIONS,
+    }
+    let seed = concat(granter, user_id, resource_id, encode_u64(ts))
+    let assignment_id = bit_slice(sha3_256(seed), 0, 128)
+    let assignment = RoleAssignment {
+        assignment_id: assignment_id,
+        user_id: user_id,
+        resource_id: resource_id,
+        resource_type: resource_type,
+        role: role,
+        permissions: permissions,
+        granted_by: granter,
+        granted_at: ts,
+        expires_at: expires_at,
+    }
+    let content = concat(assignment_id, user_id, resource_id, encode_u64(permissions), encode_u64(ts))
+    let signature = mldsa_sign(signing_sk, sha3_256(content))
+    eslite_insert("role_assignments", concat(user_id, resource_id), assignment)
+    rbac.assign_role(eslite_query("rbac_graph_id"), user_id, resource_id, permissions)
+    emit(rbac_events, assignment)
+    assignment
+}
+
+// --- Revoke a role from a user ---
+circuit revoke_role(
+    revoker: bytes(32),
+    user_id: bytes(32),
+    resource_id: bytes(32)
+) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/rbac
+    precision C
+    observe metrics: [roles_revoked]
+    monitor "role_revocation_rate" { roles_revoked < 100 per 3600s }
+    invariant "revoker_authorized" { has_admin_permission(revoker, resource_id) }
+    invariant "assignment_exists" { eslite_exists("role_assignments", concat(user_id, resource_id)) }
+    property safety "revocation_removes_permissions" { not eslite_exists("role_assignments", concat(user_id, resource_id)) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_delete, eslite_query, now]
+{
+    eslite_delete("role_assignments", concat(user_id, resource_id))
+    rbac.revoke_role(eslite_query("rbac_graph_id"), user_id, resource_id)
+    true
+}
+
+// --- Check if a user has a specific permission on a resource ---
+circuit check_permission(
+    user_id: bytes(32),
+    resource_id: bytes(32),
+    permission_bit: u64
+) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/rbac
+    precision C
+    observe metrics: [permission_checks, permission_grants, permission_denials]
+    monitor "permission_denial_rate" { permission_denials < 200 per 60s }
+    invariant "valid_permission_bit" { permission_bit > 0 }
+    property safety "expired_assignment_denied" { assignment.expires_at > 0 and assignment.expires_at < now() implies result == false }
+    meters [compute_cycles]
+    wasm_abi [eslite_query, now]
+{
+    let assignment = eslite_query("role_assignments", concat(user_id, resource_id))
+    if assignment == null { return false }
+    if assignment.expires_at > 0 and assignment.expires_at < now() { return false }
+    (assignment.permissions & permission_bit) == permission_bit
+}
+
+// --- Resolve effective permissions for a user on a resource (with group inheritance) ---
+circuit resolve_effective_permissions(
+    user_id: bytes(32),
+    repo_id: bytes(32)
+) -> u64
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/rbac
+    precision C
+    observe metrics: [permission_resolutions, inheritance_depth]
+    monitor "resolution_latency" { resolution_time_ms < 50 }
+    invariant "user_nonzero" { user_id != zero_bytes(32) }
+    property safety "permissions_monotonic_up_hierarchy" { effective >= direct_permissions }
+    property liveness "resolution_completes" { eventually(effective >= 0) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_scan]
+{
+    let direct = eslite_query("role_assignments", concat(user_id, repo_id))
+    let direct_permissions = if direct != null and (direct.expires_at == 0 or direct.expires_at > now()) {
+        direct.permissions
+    } else {
+        0
+    }
+    let repo_node = eslite_query("repo_nodes", repo_id)
+    if repo_node == null { return direct_permissions }
+    let group_assignment = eslite_query("role_assignments", concat(user_id, repo_node.group_id))
+    let group_permissions = if group_assignment != null and (group_assignment.expires_at == 0 or group_assignment.expires_at > now()) {
+        group_assignment.permissions
+    } else {
+        0
+    }
+    let group_node = eslite_query("group_nodes", repo_node.group_id)
+    let org_assignment = eslite_query("role_assignments", concat(user_id, group_node.org_id))
+    let org_permissions = if org_assignment != null and (org_assignment.expires_at == 0 or org_assignment.expires_at > now()) {
+        org_assignment.permissions
+    } else {
+        0
+    }
+    let effective = direct_permissions | group_permissions | org_permissions
+    effective
+}
+
+// --- Check branch-level push authorization ---
+@guard(block_on: branch_protection_enforced)
+circuit check_branch_push(
+    user_id: bytes(32),
+    repo_id: bytes(32),
+    branch_name: string,
+    is_protected: bool
+) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/rbac
+    precision C
+    observe metrics: [branch_push_checks, branch_push_denied]
+    monitor "branch_push_denials" { branch_push_denied < 50 per 3600s }
+    invariant "user_nonzero" { user_id != zero_bytes(32) }
+    invariant "branch_nonempty" { len(branch_name) > 0 }
+    property safety "protected_requires_maintainer" { is_protected implies (effective & 0x04) == 0x04 }
+    meters [compute_cycles]
+    wasm_abi [eslite_query, now]
+{
+    let effective = resolve_effective_permissions(user_id, repo_id)
+    if is_protected {
+        (effective & 0x04) == 0x04
+    } else {
+        (effective & 0x02) == 0x02
+    }
+}
+
+// ── Test annotations ────────────────────────────────────────────
+
+test golden "assign_developer_role" {
+    input {
+        granter: hex("aa" * 32)
+        granter_pubkey: hex("bb" * 2592)
+        user_id: hex("cc" * 32)
+        resource_id: hex("dd" * 32)
+        resource_type: "repo"
+        role: GitRole::Developer
+        signing_sk: hex("ee" * 4896)
+        expires_at: 0
+    }
+    assert {
+        result.user_id == hex("cc" * 32)
+        result.resource_id == hex("dd" * 32)
+        result.role == GitRole::Developer
+        result.permissions == 0x13
+        result.granted_at > 0
+    }
+}
+
+test golden "check_permission_push" {
+    setup {
+        assign_role(hex("aa" * 32), hex("bb" * 2592), hex("cc" * 32), hex("dd" * 32), "repo", GitRole::Developer, hex("ee" * 4896), 0)
+    }
+    input {
+        user_id: hex("cc" * 32)
+        resource_id: hex("dd" * 32)
+        permission_bit: 0x02
+    }
+    assert {
+        result == true
+    }
+}
+
+test golden "check_permission_admin_denied" {
+    setup {
+        assign_role(hex("aa" * 32), hex("bb" * 2592), hex("cc" * 32), hex("dd" * 32), "repo", GitRole::Developer, hex("ee" * 4896), 0)
+    }
+    input {
+        user_id: hex("cc" * 32)
+        resource_id: hex("dd" * 32)
+        permission_bit: 0x08
+    }
+    assert {
+        result == false
+    }
+}
+
+test golden "resolve_effective_with_inheritance" {
+    setup {
+        eslite_insert("repo_nodes", hex("dd" * 32), RepoNode {
+            repo_id: hex("dd" * 32),
+            name: "my-service",
+            owner_id: hex("aa" * 32),
+            group_id: hex("ee" * 32),
+            default_branch: "main",
+            scatter_k: 3,
+            scatter_n: 5,
+            created_at: 1000,
+            classification: "internal",
+        })
+        eslite_insert("group_nodes", hex("ee" * 32), GroupNode {
+            group_id: hex("ee" * 32),
+            org_id: hex("ff" * 32),
+            name: "backend",
+            parent_group: hex("00" * 32),
+            depth: 1,
+            created_at: 1000,
+        })
+        assign_role(hex("aa" * 32), hex("bb" * 2592), hex("cc" * 32), hex("ee" * 32), "group", GitRole::Maintainer, hex("ee" * 4896), 0)
+    }
+    input {
+        user_id: hex("cc" * 32)
+        repo_id: hex("dd" * 32)
+    }
+    assert {
+        result >= 0x7F
+    }
+}
+
+fuzz_target "rbac_assignment_fuzz" {
+    inputs {
+        granter: bytes(32)
+        user_id: bytes(32)
+        resource_id: bytes(32)
+        role: u8(0..4)
+        expires_at: u64
+    }
+    assert {
+        no_panic
+    }
+}
+
+fuzz_target "permission_resolution_fuzz" {
+    inputs {
+        user_id: bytes(32)
+        repo_id: bytes(32)
+    }
+    assert {
+        no_panic
+        result >= 0
+    }
+}

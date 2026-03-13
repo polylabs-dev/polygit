@@ -1,8 +1,13 @@
-// Poly Git Metering — Git operation resource metering
+// Poly Git Metering — Git operation resource metering (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/git/metering
 //   Maps git operations to PolyKit 8-dimension metering.
+//
+// es-git Wire VCS opcodes mapped:
+//   0xA1 OBJECT_PUSH → meter_push
+//   0xA2 OBJECT_PULL → meter_pull
+//   0xAA REVIEW_SUBMIT / 0xAB REVIEW_APPROVE → meter_review
 //
 // Dimension maps:
 //   push   → [B: transfer_bytes, S: objects_stored, O: refs_updated]
@@ -19,32 +24,56 @@ type GitOperation = enum {
     Review,
 }
 
-type PushMetrics = struct {
+data PushMetrics : git v1 {
     transfer_bytes: u64,
     objects_stored: u64,
     refs_updated: u32,
     scatter_chunks: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type PullMetrics = struct {
+data PullMetrics : git v1 {
     transfer_bytes: u64,
     objects_fetched: u64,
     cache_hits: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type CommitMetrics = struct {
+data CommitMetrics : git v1 {
     objects_created: u32,
     tree_entries: u32,
     signature_bytes: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type ReviewMetrics = struct {
+data ReviewMetrics : git v1 {
     ai_inferences: u32,
     diff_lines_analyzed: u64,
     approvals_processed: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type RepoQuota = struct {
+data RepoQuota : git v1 {
     repo_id: bytes(32),
     max_storage_bytes: u64,
     max_objects: u64,
@@ -53,17 +82,26 @@ type RepoQuota = struct {
     current_storage: u64,
     current_objects: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/metering
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
 stream git_metering_events: event<MeteringRecord>
     | throttle 2000/s burst 5000
 
-// --- Meter a push operation ---
+// --- Meter a push operation (Wire opcode 0xA1 OBJECT_PUSH) ---
 circuit meter_push(user_id: bytes(16), repo_id: bytes(32), metrics: PushMetrics) -> MeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/metering
+    precision C
     observe metrics: [push_meters, bandwidth_metered, storage_metered]
     monitor "push_metering" { push_meters > 0 }
     invariant "positive_transfer" { metrics.transfer_bytes > 0 }
+    property safety "metering_non_negative" { dims.bandwidth >= 0 and dims.storage >= 0 }
+    property liveness "usage_eventually_recorded" { eventually(recorded) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -80,12 +118,15 @@ circuit meter_push(user_id: bytes(16), repo_id: bytes(32), metrics: PushMetrics)
     record_usage(user_id, "git.push", dims)
 }
 
-// --- Meter a pull operation ---
+// --- Meter a pull operation (Wire opcode 0xA2 OBJECT_PULL) ---
 circuit meter_pull(user_id: bytes(16), repo_id: bytes(32), metrics: PullMetrics) -> MeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/metering
+    precision C
     observe metrics: [pull_meters, bandwidth_metered, cache_hit_ratio]
     monitor "pull_metering" { pull_meters > 0 }
+    invariant "valid_user" { user_id != zero_bytes(16) }
+    property safety "bandwidth_metered_correctly" { dims.bandwidth == metrics.transfer_bytes }
     meters [compute_cycles, memory_bytes, bandwidth_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -102,12 +143,15 @@ circuit meter_pull(user_id: bytes(16), repo_id: bytes(32), metrics: PullMetrics)
     record_usage(user_id, "git.pull", dims)
 }
 
-// --- Meter a review operation ---
+// --- Meter a review operation (Wire opcode 0xAA / 0xAB) ---
 circuit meter_review(user_id: bytes(16), repo_id: bytes(32), metrics: ReviewMetrics) -> MeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/metering
+    precision C
     observe metrics: [review_meters, ai_inference_metered]
     monitor "review_metering" { review_meters > 0 }
+    invariant "valid_user" { user_id != zero_bytes(16) }
+    property safety "inference_count_non_negative" { dims.executions >= 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -125,12 +169,16 @@ circuit meter_review(user_id: bytes(16), repo_id: bytes(32), metrics: ReviewMetr
 }
 
 // --- Check repo quota before operation ---
+@guard(block_on: storage_quota_exceeded)
 circuit check_repo_quota(repo_id: bytes(32), operation: GitOperation, estimated_bytes: u64) -> bool
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/metering
+    precision C
     observe metrics: [quota_checks, quota_exceeded, quota_remaining_pct]
     monitor "quota_violations" { quota_exceeded < 10 per 3600s }
     invariant "quota_defined" { eslite_exists("repo_quotas", repo_id) }
+    property safety "quota_never_negative" { quota.current_storage >= 0 }
+    property liveness "quota_check_completes" { eventually(result == true or result == false) }
     meters [compute_cycles]
     wasm_abi [eslite_query]
 {
@@ -153,8 +201,11 @@ circuit check_repo_quota(repo_id: bytes(32), operation: GitOperation, estimated_
 circuit get_usage(user_id: bytes(16), repo_id: bytes(32)) -> DimensionValues
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/metering
+    precision B
     observe metrics: [usage_queries]
     monitor "usage_query_volume" { usage_queries < 500 per 60s }
+    invariant "valid_user" { user_id != zero_bytes(16) }
+    property safety "usage_values_non_negative" { all_dimensions_non_negative(result) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query]
 {

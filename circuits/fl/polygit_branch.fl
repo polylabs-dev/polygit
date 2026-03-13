@@ -1,9 +1,14 @@
-// Poly Git Branch — Branch management, merging, and ref resolution
+// Poly Git Branch — Branch management, merging, and ref resolution (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/git/branch
 //   Branches are named refs pointing to commit ObjectIds.
 //   Refs stored on Stratum KV; merge operations require PQ-signed commits.
+//
+// es-git Wire VCS opcodes:
+//   0xA3 REF_UPDATE — update a branch ref pointer
+//   0xA4 REF_QUERY  — resolve a branch to its tip commit
+//   0xA9 MERGE_EXEC — execute a merge between branches
 //
 // Merge strategies:
 //   FastForward — move ref pointer if linear ancestry
@@ -14,7 +19,7 @@ import polykit_identity
 import polygit_repository
 import polygit_commit
 
-type BranchRef = struct {
+data BranchRef : git v1 {
     repo_id: RepoId,
     name: string,
     tip: ObjectId,
@@ -22,6 +27,12 @@ type BranchRef = struct {
     created_at: u64,
     updated_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/branch
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
 type MergeStrategy = enum {
     FastForward,
@@ -29,33 +40,48 @@ type MergeStrategy = enum {
     Rebase,
 }
 
-type MergeResult = struct {
+data MergeResult : git v1 {
     success: bool,
     strategy_used: MergeStrategy,
     merge_commit: ObjectId,
     conflicts: list<string>,
     commits_merged: u32,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/branch
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
-type CherryPickResult = struct {
+data CherryPickResult : git v1 {
     success: bool,
     new_commit: ObjectId,
     source_commit: ObjectId,
     conflicts: list<string>,
 }
+    store kv
+    govern lex esn/global/org/polylabs/git/branch
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
 
 stream branch_events: event<BranchRef>
     | throttle 1000/s burst 2000
 
-// --- Create a new branch pointing at a commit ---
+// --- Create a new branch pointing at a commit (Wire opcode 0xA3 REF_UPDATE) ---
 circuit create_branch(repo_id: RepoId, name: string, target: ObjectId, protected: bool) -> BranchRef
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/branch
+    precision C
     observe metrics: [branches_created, protected_branches]
     monitor "branch_creation_rate" { branches_created < 500 per 3600s }
     invariant "target_exists" { eslite_exists("commits", target) }
     invariant "name_valid" { len(name) > 0 and not contains(name, "..") }
     invariant "no_duplicate" { not eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(name))) }
+    property safety "branch_ref_points_to_valid_commit" { eslite_exists("commits", target) }
+    property liveness "branch_eventually_created" { eventually(eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(name)))) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, eslite_query, now]
 {
@@ -75,12 +101,16 @@ circuit create_branch(repo_id: RepoId, name: string, target: ObjectId, protected
 }
 
 // --- Delete a branch ---
+@guard(block_on: protected_branch)
 circuit delete_branch(repo_id: RepoId, name: string) -> bool
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/branch
+    precision C
     observe metrics: [branches_deleted, protected_delete_blocked]
     monitor "branch_deletion_audit" { branches_deleted < 50 per 3600s }
     invariant "not_default" { name != eslite_query("repos", repo_id).default_branch }
+    invariant "branch_exists" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(name))) }
+    property safety "default_branch_preserved" { name != eslite_query("repos", repo_id).default_branch }
     meters [compute_cycles]
     wasm_abi [eslite_delete, eslite_query]
 {
@@ -92,7 +122,7 @@ circuit delete_branch(repo_id: RepoId, name: string) -> bool
     true
 }
 
-// --- Merge source branch into target branch ---
+// --- Merge source branch into target branch (Wire opcode 0xA9 MERGE_EXEC) ---
 circuit merge_branches(
     repo_id: RepoId,
     source: string,
@@ -104,11 +134,15 @@ circuit merge_branches(
 ) -> MergeResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/git/branch
+    precision C
     constant_time true
     observe metrics: [merges_attempted, merges_succeeded, merge_conflicts, strategy_used]
     monitor "merge_conflict_rate" { merge_conflicts < 20 per 3600s }
     invariant "branches_exist" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(source))) }
     invariant "target_exists" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(target))) }
+    invariant "branches_differ" { source != target }
+    property safety "merge_preserves_target_history" { walk_ancestry(merge_commit, target_ref.tip) }
+    property liveness "merge_eventually_completes" { eventually(result.success or len(result.conflicts) > 0) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_insert, scatter_cas_get, mldsa_sign, now]
 {
@@ -171,10 +205,13 @@ circuit cherry_pick(
 ) -> CherryPickResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/git/branch
+    precision C
     constant_time true
     observe metrics: [cherry_picks, cherry_pick_conflicts]
     monitor "cherry_pick_rate" { cherry_picks < 100 per 3600s }
     invariant "commit_exists" { eslite_exists("commits", source_commit_id) }
+    invariant "target_branch_exists" { eslite_exists("refs", concat(repo_id, encode("/refs/heads/"), encode(target_branch))) }
+    property safety "cherry_pick_no_data_loss" { eslite_exists("commits", source_commit_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_insert, mldsa_sign, now]
 {
@@ -197,8 +234,11 @@ circuit cherry_pick(
 circuit list_branches(repo_id: RepoId) -> list<BranchRef>
     profile poly_framework_standard
     lex esn/global/org/polylabs/git/branch
+    precision B
     observe metrics: [branch_list_queries, branch_count]
     monitor "branch_count" { branch_count < 10000 }
+    invariant "repo_exists" { eslite_exists("repos", repo_id) }
+    property safety "list_branches_deterministic" { list_branches(repo_id) == list_branches(repo_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_scan]
 {

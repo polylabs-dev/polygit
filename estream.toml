@@ -1,0 +1,51 @@
+[platform]
+version = "0.11.0"
+min_version = "0.11.0"
+
+[component]
+name = "polygit"
+version = "0.2.0"
+description = "PQ-signed version control with enterprise governance on scatter-CAS"
+
+[compiler]
+target = ["wasm32-wasi", "native"]
+optimization = "size"
+strip = true
+
+[wire]
+vcs_opcodes = [
+    { code = "0xA0", name = "REPO_INIT",       circuit = "create_repo" },
+    { code = "0xA1", name = "OBJECT_PUSH",      circuit = "store_object" },
+    { code = "0xA2", name = "OBJECT_PULL",       circuit = "get_object" },
+    { code = "0xA3", name = "REF_UPDATE",        circuit = "create_branch" },
+    { code = "0xA4", name = "REF_QUERY",         circuit = "resolve_ref" },
+    { code = "0xA5", name = "TREE_BUILD",        circuit = "build_tree" },
+    { code = "0xA6", name = "DIFF_COMPUTE",      circuit = "diff_trees" },
+    { code = "0xA7", name = "COMMIT_SIGN",       circuit = "create_commit" },
+    { code = "0xA8", name = "COMMIT_VERIFY",     circuit = "verify_commit" },
+    { code = "0xA9", name = "MERGE_EXEC",        circuit = "merge_branches" },
+    { code = "0xAA", name = "REVIEW_SUBMIT",     circuit = "submit_review" },
+    { code = "0xAB", name = "REVIEW_APPROVE",    circuit = "approve_commit" },
+    { code = "0xAC", name = "PROMOTE_BLESSED",   circuit = "promote_to_blessed" },
+]
+
+[stratum]
+default_store = "kv"
+graph_store = "csr"
+
+[cortex]
+default_alert_channel = "git-team"
+anomaly_detection = true
+drift_threshold = 0.10
+
+[signing]
+algorithm = "ml-dsa-87"
+key_size = 4896
+signature_size = 4627
+pubkey_size = 2592
+
+[scatter]
+default_k = 3
+default_n = 5
+min_k = 3
+max_n = 32

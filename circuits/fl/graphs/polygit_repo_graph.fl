@@ -1,4 +1,4 @@
-/// Poly Git Repo Graph — Repository registry with org/group hierarchy and anomaly detection
+/// Poly Git Repo Graph — Repository registry with org/group hierarchy and anomaly detection (v0.11.0)
 /// Stratum graph storage + Cortex AI governance
 /// govern lex esn/global/org/polylabs/git
 
@@ -7,7 +7,7 @@ import polygit_commit
 
 // ── Data: Node types (data + store graph + cortex) ──────────────
 
-data RepoNode : app v1 {
+data RepoNode : git v1 {
     repo_id: bytes(32),
     name: string,
     owner_id: bytes(32),
@@ -26,7 +26,7 @@ data RepoNode : app v1 {
         on_anomaly alert "git-team"
     }
 
-data OrgNode : app v1 {
+data OrgNode : git v1 {
     org_id: bytes(32),
     name: string,
     admin_id: bytes(32),
@@ -39,10 +39,12 @@ data OrgNode : app v1 {
     govern lex esn/global/org/polylabs/git
     cortex {
         obfuscate [admin_id]
+        redact [owner_pubkey]
         infer on_write
+        on_anomaly alert "git-team"
     }
 
-data GroupNode : app v1 {
+data GroupNode : git v1 {
     group_id: bytes(32),
     org_id: bytes(32),
     name: string,
@@ -54,9 +56,10 @@ data GroupNode : app v1 {
     govern lex esn/global/org/polylabs/git
     cortex {
         infer on_write
+        on_anomaly alert "git-team"
     }
 
-data ContributorNode : app v1 {
+data ContributorNode : git v1 {
     contributor_id: bytes(32),
     user_id: bytes(32),
     pubkey: bytes(2592),
@@ -67,9 +70,10 @@ data ContributorNode : app v1 {
     store graph
     govern lex esn/global/org/polylabs/git
     cortex {
-        redact [email]
+        redact [email, pubkey]
         obfuscate [user_id]
         infer on_write
+        on_anomaly alert "git-team"
     }
 
 // ── Edge types ──────────────────────────────────────────────────
@@ -102,7 +106,7 @@ state_machine repo_lifecycle {
     initial CREATED
     persistence wal
     terminal [DELETED]
-    li_anomaly_detection true
+    ai_anomaly_detection true
 
     CREATED -> ACTIVE when first_push
     ACTIVE -> ARCHIVED when archive_requested guard no_open_reviews
@@ -173,6 +177,7 @@ circuit register_org(graph_id: bytes(32), org: OrgNode) -> bytes(32)
     monitor "org_registration_rate" { orgs_registered < 50 per 3600s }
     invariant "org_name_nonempty" { len(org.name) > 0 }
     invariant "owner_key_valid" { len(org.owner_pubkey) == 2592 }
+    property safety "org_id_unique" { not eslite_exists("org_nodes", org.org_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -190,6 +195,7 @@ circuit register_group(graph_id: bytes(32), group: GroupNode) -> bytes(32)
     monitor "group_depth" { group_depth < 16 }
     invariant "depth_limit" { group.depth < 16 }
     invariant "org_exists" { eslite_exists("org_nodes", group.org_id) }
+    property safety "group_depth_bounded" { group.depth < 16 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -211,6 +217,7 @@ circuit register_repo(graph_id: bytes(32), repo: RepoNode) -> bytes(32)
     monitor "repo_registration_rate" { repos_registered < 200 per 3600s }
     invariant "group_exists" { eslite_exists("group_nodes", repo.group_id) }
     invariant "scatter_valid" { repo.scatter_k >= 3 }
+    property safety "repo_belongs_to_valid_group" { eslite_exists("group_nodes", repo.group_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -231,6 +238,7 @@ circuit register_contributor(graph_id: bytes(32), contributor: ContributorNode) 
     observe metrics: [contributors_registered]
     monitor "contributor_rate" { contributors_registered < 1000 per 3600s }
     invariant "pubkey_valid" { len(contributor.pubkey) == 2592 }
+    property safety "contributor_identity_valid" { len(contributor.pubkey) == 2592 and contributor.contributor_id != zero_bytes(32) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -251,6 +259,8 @@ circuit record_contribution(graph_id: bytes(32), contributor_id: bytes(32), repo
     monitor "push_frequency_anomaly" { contributions_recorded < 500 per 3600s }
     invariant "contributor_exists" { eslite_exists("contributor_nodes", contributor_id) }
     invariant "repo_exists" { eslite_exists("repo_nodes", repo_id) }
+    property safety "overlay_monotonic" { overlay_get(repo_registry, repo_id, "commit_count") >= prev_commit_count }
+    property liveness "contribution_eventually_recorded" { eventually(eslite_exists("contributes_edges", concat(contributor_id, repo_id))) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_insert, now]
 {
@@ -283,6 +293,7 @@ circuit record_fork(graph_id: bytes(32), source_repo: bytes(32), forked_repo: by
     invariant "source_exists" { eslite_exists("repo_nodes", source_repo) }
     invariant "fork_exists" { eslite_exists("repo_nodes", forked_repo) }
     invariant "no_self_fork" { source_repo != forked_repo }
+    property safety "fork_is_distinct" { source_repo != forked_repo }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -303,6 +314,8 @@ circuit transition_repo_state(graph_id: bytes(32), repo_id: bytes(32), event: st
     observe metrics: [state_transitions, transition_type]
     monitor "lifecycle_anomalies" { state_transitions < 50 per 3600s }
     invariant "repo_exists" { eslite_exists("repo_nodes", repo_id) }
+    property safety "terminal_is_final" { current_state == "DELETED" implies new_state == "DELETED" }
+    property liveness "valid_transition_advances" { event in valid_events(current_state) implies new_state != current_state }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_insert, now]
 {
@@ -329,6 +342,8 @@ circuit query_repos_by_org(graph_id: bytes(32), org_id: bytes(32)) -> list<RepoN
     precision B
     observe metrics: [org_repo_queries, repos_returned]
     monitor "query_volume" { org_repo_queries < 200 per 60s }
+    invariant "org_exists" { eslite_exists("org_nodes", org_id) }
+    property safety "results_belong_to_org" { all(repos, |r| eslite_query("group_nodes", r.group_id).org_id == org_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_scan]
 {
@@ -355,6 +370,8 @@ circuit detect_push_anomalies(graph_id: bytes(32), repo_id: bytes(32), window_s:
     ai_feed repo_anomaly
     observe metrics: [anomaly_checks, anomalies_detected]
     monitor "anomaly_detection" { anomalies_detected < 20 per 3600s }
+    invariant "window_positive" { window_s > 0 }
+    property safety "anomaly_requires_baseline" { baseline == null implies result == false }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, now]
 {
@@ -377,6 +394,8 @@ circuit get_contributor_stats(graph_id: bytes(32), repo_id: bytes(32)) -> list<C
     precision B
     observe metrics: [contributor_stat_queries]
     monitor "contributor_query_volume" { contributor_stat_queries < 200 per 60s }
+    invariant "repo_exists" { eslite_exists("repo_nodes", repo_id) }
+    property safety "stats_for_valid_repo" { eslite_exists("repo_nodes", repo_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_scan]
 {
