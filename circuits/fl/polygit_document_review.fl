@@ -1,0 +1,440 @@
+// Poly Git Document Review — Document diff and review for DOCX/PPTX changes
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/git/document
+//   sub_lex document_review_session fan_in — per-review session telemetry
+//   Composes polykit_studio_document to render structural diffs of binary document
+//   formats (DOCX, PPTX, XLSX, PDF) committed to es-git repos. Reviewers see
+//   paragraph-level change tracking, slide diffs, and cell-level deltas rather
+//   than opaque binary blobs. Annotations and approvals are ML-DSA-87 signed.
+//
+// es-git Wire VCS opcodes:
+//   0xB0 DOCUMENT_DIFF     — compute structural diff between two document versions
+//   0xB1 DOCUMENT_ANNOTATE — add a signed annotation to a document diff
+//   0xB2 DOCUMENT_APPROVE  — approve a document change with signed review
+
+import polykit_studio_document
+import polygit_review
+import polygit_metering
+
+// ── Types ───────────────────────────────────────────────────────
+
+type DocumentDiffKind = enum {
+    ParagraphChange,
+    SlideChange,
+    CellChange,
+    StyleChange,
+    ImageChange,
+    MetadataChange,
+}
+
+type AnnotationSeverity = enum {
+    Info,
+    Warning,
+    Blocking,
+}
+
+type DocumentApprovalStatus = enum {
+    Pending,
+    Approved,
+    ChangesRequested,
+    Rejected,
+}
+
+// ── Data ────────────────────────────────────────────────────────
+
+data DocumentDiffSession : git v1 {
+    diff_id: bytes(16),
+    review_id: bytes(16),
+    repo_id: bytes(32),
+    base_commit: bytes(32),
+    head_commit: bytes(32),
+    file_path: string,
+    format: DocumentFormat,
+    diff_entries: list<DocumentDiffEntry>,
+    additions: u32,
+    deletions: u32,
+    modifications: u32,
+    computed_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/document
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data DocumentDiffEntry : git v1 {
+    kind: DocumentDiffKind,
+    location: string,
+    old_content_hash: bytes(32),
+    new_content_hash: bytes(32),
+    description: string,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/document
+    cortex {
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data DocumentAnnotation : git v1 {
+    annotation_id: bytes(16),
+    diff_id: bytes(16),
+    reviewer: bytes(32),
+    location: string,
+    comment: string,
+    severity: AnnotationSeverity,
+    signature: bytes(4627),
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/document
+    cortex {
+        redact [reviewer, signature]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+data DocumentApproval : git v1 {
+    diff_id: bytes(16),
+    reviewer: bytes(32),
+    reviewer_pubkey: bytes(2592),
+    status: DocumentApprovalStatus,
+    annotation_count: u32,
+    blocking_count: u32,
+    signature: bytes(4627),
+    approved_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/git/document
+    cortex {
+        redact [reviewer, reviewer_pubkey, signature]
+        infer on_write
+        on_anomaly alert "git-team"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream document_diff_events: event<DocumentDiffSession>
+    | throttle 200/s burst 500
+
+stream document_annotation_events: event<DocumentAnnotation>
+    | throttle 500/s burst 1000
+
+stream document_approval_events: event<DocumentApproval>
+    | throttle 100/s burst 200
+
+// ── Circuits ────────────────────────────────────────────────────
+
+// Wire opcode 0xB0 DOCUMENT_DIFF
+@guard(block_on: commit_not_found)
+circuit diff_documents(
+    repo_id: bytes(32),
+    review_id: bytes(16),
+    base_commit: bytes(32),
+    head_commit: bytes(32),
+    file_path: string,
+    base_content: bytes,
+    head_content: bytes,
+    format: DocumentFormat,
+) -> DocumentDiffSession
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/document {
+        sub_lex document_review_session fan_in
+    }
+    precision C
+    observe metrics: [diffs_computed, diff_latency_ms, diff_entry_count, format_distribution]
+    monitor "diff_latency" { diff_latency_ms < 3000 }
+    invariant "commits_differ" { base_commit != head_commit }
+    invariant "content_present" { len(base_content) > 0 || len(head_content) > 0 }
+    property safety "diff_entry_counts_consistent" {
+        result.additions + result.deletions + result.modifications == len(result.diff_entries)
+    }
+    property liveness "diff_eventually_stored" {
+        eventually(eslite_exists("document_diffs", result.diff_id))
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, csprng]
+{
+    let ts = now()
+    let diff_seed = concat(repo_id, base_commit, head_commit, encode(file_path), csprng(16))
+    let diff_id = bit_slice(sha3_256(diff_seed), 0, 128)
+
+    let base_structure = polykit_studio_document::parse_structure(base_content, format)
+    let head_structure = polykit_studio_document::parse_structure(head_content, format)
+    let diff_entries = polykit_studio_document::compute_structural_diff(base_structure, head_structure)
+
+    let additions = count(diff_entries, |e| e.old_content_hash == zero_bytes(32))
+    let deletions = count(diff_entries, |e| e.new_content_hash == zero_bytes(32))
+    let modifications = len(diff_entries) - additions - deletions
+
+    let session = DocumentDiffSession {
+        diff_id: diff_id,
+        review_id: review_id,
+        repo_id: repo_id,
+        base_commit: base_commit,
+        head_commit: head_commit,
+        file_path: file_path,
+        format: format,
+        diff_entries: diff_entries,
+        additions: additions,
+        deletions: deletions,
+        modifications: modifications,
+        computed_at: ts,
+    }
+
+    eslite_insert("document_diffs", diff_id, session)
+    emit(document_diff_events, session)
+
+    polygit_metering::record_usage(repo_id, "git_document_diff", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: len(base_content) + len(head_content),
+        storage: 0, observables: 2, proofs: 0, circuits: 1, mpc_sessions: 0,
+    })
+
+    session
+}
+
+// Wire opcode 0xB1 DOCUMENT_ANNOTATE
+@guard(block_on: diff_not_found)
+circuit annotate_document(
+    diff_id: bytes(16),
+    reviewer: bytes(32),
+    signing_sk: bytes(4896),
+    location: string,
+    comment: string,
+    severity: AnnotationSeverity,
+) -> DocumentAnnotation
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/git/document {
+        sub_lex document_review_session fan_in
+    }
+    precision C
+    observe metrics: [annotations_created, annotation_severity_distribution]
+    monitor "annotation_rate" { annotations_created < 500/s }
+    invariant "diff_exists" { eslite_exists("document_diffs", diff_id) }
+    invariant "comment_nonempty" { len(comment) > 0 }
+    property safety "annotation_signed" { len(result.signature) == 4627 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, mldsa_sign, now, csprng]
+{
+    let ts = now()
+    let ann_seed = concat(diff_id, reviewer, encode(location), csprng(16))
+    let annotation_id = bit_slice(sha3_256(ann_seed), 0, 128)
+
+    let sig_payload = concat(annotation_id, diff_id, reviewer, encode(comment), encode_u8(severity), encode_u64(ts))
+    let signature = mldsa_sign(signing_sk, sha3_256(sig_payload))
+
+    let annotation = DocumentAnnotation {
+        annotation_id: annotation_id,
+        diff_id: diff_id,
+        reviewer: reviewer,
+        location: location,
+        comment: comment,
+        severity: severity,
+        signature: signature,
+        created_at: ts,
+    }
+
+    eslite_insert("document_annotations", annotation_id, annotation)
+    emit(document_annotation_events, annotation)
+    annotation
+}
+
+// Wire opcode 0xB2 DOCUMENT_APPROVE
+@guard(block_on: blocking_annotations_present)
+circuit approve_document_change(
+    diff_id: bytes(16),
+    reviewer: bytes(32),
+    reviewer_pubkey: bytes(2592),
+    signing_sk: bytes(4896),
+) -> DocumentApproval
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/git/document {
+        sub_lex document_review_session fan_in
+    }
+    precision C
+    constant_time true
+    observe metrics: [document_approvals, approval_with_blocking, signing_ops]
+    monitor "approval_rate" { document_approvals < 200/s }
+    invariant "diff_exists" { eslite_exists("document_diffs", diff_id) }
+    invariant "not_self_review" {
+        let diff = eslite_query("document_diffs", diff_id)
+        let review = eslite_query("reviews", diff.review_id)
+        reviewer != review.author
+    }
+    property safety "blocking_annotations_block_approval" {
+        result.blocking_count > 0 implies result.status == DocumentApprovalStatus::ChangesRequested
+    }
+    property liveness "approval_eventually_recorded" {
+        eventually(eslite_exists("document_approvals", concat(diff_id, reviewer)))
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_scan, eslite_insert, mldsa_sign, now]
+{
+    let ts = now()
+    let annotations = eslite_scan("document_annotations", diff_id)
+    let annotation_count = len(annotations)
+    let blocking_count = count(annotations, |a| a.severity == AnnotationSeverity::Blocking)
+
+    let status = if blocking_count > 0 {
+        DocumentApprovalStatus::ChangesRequested
+    } else {
+        DocumentApprovalStatus::Approved
+    }
+
+    let sig_payload = concat(diff_id, reviewer, encode_u8(status), encode_u32(annotation_count), encode_u64(ts))
+    let signature = mldsa_sign(signing_sk, sha3_256(sig_payload))
+
+    let approval = DocumentApproval {
+        diff_id: diff_id,
+        reviewer: reviewer,
+        reviewer_pubkey: reviewer_pubkey,
+        status: status,
+        annotation_count: annotation_count,
+        blocking_count: blocking_count,
+        signature: signature,
+        approved_at: ts,
+    }
+
+    eslite_insert("document_approvals", concat(diff_id, reviewer), approval)
+    emit(document_approval_events, approval)
+    approval
+}
+
+// ── Test & Verification ─────────────────────────────────────────
+
+test golden "diff_docx_documents" {
+    input {
+        repo_id: hex("ee" * 32)
+        review_id: bytes(16, 0xFF)
+        base_commit: hex("aa" * 32)
+        head_commit: hex("bb" * 32)
+        file_path: "docs/proposal.docx"
+        base_content: bytes(4096, 0x11)
+        head_content: bytes(4096, 0x22)
+        format: DocumentFormat::Docx
+    }
+    assert {
+        result.diff_id != zero_bytes(16)
+        result.repo_id == hex("ee" * 32)
+        result.base_commit == hex("aa" * 32)
+        result.head_commit == hex("bb" * 32)
+        result.file_path == "docs/proposal.docx"
+        len(result.diff_entries) > 0
+        result.computed_at > 0
+    }
+}
+
+test golden "annotate_document_blocking" {
+    setup {
+        eslite_insert("document_diffs", bytes(16, 0xDD), DocumentDiffSession {
+            diff_id: bytes(16, 0xDD),
+            review_id: bytes(16, 0xFF),
+            repo_id: hex("ee" * 32),
+            base_commit: hex("aa" * 32),
+            head_commit: hex("bb" * 32),
+            file_path: "docs/proposal.docx",
+            format: DocumentFormat::Docx,
+            diff_entries: [],
+            additions: 0, deletions: 0, modifications: 0,
+            computed_at: 1000,
+        })
+    }
+    input {
+        diff_id: bytes(16, 0xDD)
+        reviewer: hex("cc" * 32)
+        signing_sk: bytes(4896, 0x11)
+        location: "paragraph:3"
+        comment: "Legal language needs update per new compliance rules"
+        severity: AnnotationSeverity::Blocking
+    }
+    assert {
+        result.annotation_id != zero_bytes(16)
+        result.diff_id == bytes(16, 0xDD)
+        result.severity == AnnotationSeverity::Blocking
+        result.comment == "Legal language needs update per new compliance rules"
+        len(result.signature) == 4627
+    }
+}
+
+test golden "approve_document_no_blockers" {
+    setup {
+        eslite_insert("document_diffs", bytes(16, 0xDD), DocumentDiffSession {
+            diff_id: bytes(16, 0xDD),
+            review_id: bytes(16, 0xFF),
+            repo_id: hex("ee" * 32),
+            base_commit: hex("aa" * 32),
+            head_commit: hex("bb" * 32),
+            file_path: "docs/proposal.docx",
+            format: DocumentFormat::Docx,
+            diff_entries: [],
+            additions: 0, deletions: 0, modifications: 0,
+            computed_at: 1000,
+        })
+        eslite_insert("reviews", bytes(16, 0xFF), ReviewRequest {
+            review_id: bytes(16, 0xFF),
+            repo_id: hex("ee" * 32),
+            commit_id: hex("bb" * 32),
+            source_branch: "feature/docs",
+            target_branch: "main",
+            author: hex("aa" * 32),
+            diff_hash: hex("dd" * 32),
+            created_at: 1000,
+        })
+    }
+    input {
+        diff_id: bytes(16, 0xDD)
+        reviewer: hex("cc" * 32)
+        reviewer_pubkey: hex("cc" * 2592)
+        signing_sk: bytes(4896, 0x11)
+    }
+    assert {
+        result.status == DocumentApprovalStatus::Approved
+        result.blocking_count == 0
+        len(result.signature) == 4627
+        result.approved_at > 0
+    }
+}
+
+kat_vector "sha3_256_diff_seed" {
+    function: "sha3_256"
+    input: bytes("")
+    expected: hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")
+}
+
+kat_vector "mldsa87_sign_annotation" {
+    function: "mldsa_sign"
+    input: {
+        sk: hex("ff" * 4896)
+        message: hex("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+    }
+    post_condition: {
+        len(signature) == 4627
+        mldsa_verify(message, signature, derived_pk(sk)) == true
+    }
+}
+
+fuzz_target "diff_documents_fuzz" {
+    inputs {
+        base_content: bytes(1..65536)
+        head_content: bytes(1..65536)
+        format: u8(0..3)
+    }
+    assert {
+        no_panic
+    }
+}
+
+fuzz_target "approve_document_change_fuzz" {
+    inputs {
+        diff_id: bytes(16)
+        reviewer: bytes(32)
+        reviewer_pubkey: bytes(2592)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

@@ -1,6 +1,6 @@
 # Poly Git
 
-PQ-signed version control with enterprise governance, built on eStream v0.9.1.
+PQ-signed version control with enterprise governance, built on eStream v0.22.0. 100% FastLang. No hand-written Rust.
 
 ## Overview
 
@@ -44,10 +44,10 @@ AI Code Review (Cortex)
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| poly-git remote helper | crates/poly-git/ | Git remote helper for scatter-distributed repos |
 | Enterprise governance | circuits/fl/ | FastLang circuits for RBAC, org hierarchy, issues |
 | Desktop App | apps/desktop/ | Tauri-based repo browser and admin console |
-| CLI | crates/poly-git-cli/ | Command-line interface for poly-git operations |
+
+> **Note**: `crates/` is legacy scaffolding superseded by FLIR codegen. All logic lives in FastLang circuits.
 
 ## eStream Foundation
 
@@ -75,19 +75,14 @@ All communication uses the eStream Wire Protocol. No REST/HTTP endpoints.
 
 ## Platform
 
-- eStream v0.9.1
+- eStream v0.22.0
 - FastLang circuits (graph/DAG constructs, state machines)
+- FLIR codegen (FastLang → FLIR → Rust/WASM)
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - Stratum storage, Cortex AI governance
 - 8-Dimension metering
 - L2 multi-token payments
 
-## Developer Language Story (v0.9.1)
+## Commit Convention
 
-eStream supports **7 languages** at full parity: Rust (native), Python (PyO3), TypeScript (WASM), Go (CGo), C++ (FFI), Swift (C bridging), and FastLang (native).
-
-### Internal Development
-
-- **FastLang first**: all new circuits and features are authored in FastLang (.fl) first
-- **Six-language parity**: every FastLang feature must have equivalent API surface in Rust, Python, TypeScript, Go, C++, and Swift
-- ESCIR operations power the compiler pipeline but are invisible to users
+Commit to the GitHub issue or epic the work was done under.
