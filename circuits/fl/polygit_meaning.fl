@@ -1,0 +1,248 @@
+/// Spec: specs/POLYGIT_CE_APP_GRAPH_SPEC.md §3-5
+/// PolyGit CE Meaning Domains — registers 3 meaning domains, noise filter,
+/// and 2 SME panels for cognitive engine integration.
+///
+/// Epic: polygit#TBD (CE + App Graph Integration)
+/// govern lex polylabs/polygit/cognitive
+
+lex polylabs/polygit/cognitive
+
+@target software
+@codegen_targets ["wasm", "rust"]
+
+import "polylabs/polykit/cognitive.fl" {
+    MeaningDomain, MeaningDomainConfig, NoiseFilterConfig, NoiseRule,
+    SmePanelConfig, SmePanelTrigger,
+    register_meaning_domain, register_noise_filter, register_sme_panel,
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const POLYGIT_CE_LEX: string = "polylabs/polygit/cognitive"
+const DOMAIN_COUNT: u32 = 3
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §1  Meaning Domain Declarations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Commit frequency distributions, branch lifecycle analysis, merge conflict
+/// hotspot identification, committer cadence anomalies.
+circuit vcs_commit_patterns_domain() -> MeaningDomainConfig
+    lex polylabs/polygit/cognitive
+    @status production
+    @precision C
+{
+    MeaningDomainConfig {
+        name: "vcs/commit_patterns",
+        lex_namespace: POLYGIT_CE_LEX,
+        crystallization_threshold: 50,
+        impact_weight: 0.3,
+        event_sources: [
+            "polygit_commit.commit_created",
+            "polygit_branch.branch_created",
+            "polygit_branch.branch_merged",
+            "polygit_branch.branch_deleted",
+        ],
+        retention_days: 90,
+        aggregation_window_hours: 24,
+    }
+}
+
+/// Code review velocity, CI pass rate trends, test coverage delta, review depth
+/// scoring, automated vs human review ratio.
+circuit vcs_code_quality_domain() -> MeaningDomainConfig
+    lex polylabs/polygit/cognitive
+    @status production
+    @precision C
+{
+    MeaningDomainConfig {
+        name: "vcs/code_quality",
+        lex_namespace: POLYGIT_CE_LEX,
+        crystallization_threshold: 30,
+        impact_weight: 0.4,
+        event_sources: [
+            "polygit_review.review_submitted",
+            "polygit_review.review_approved",
+            "polygit_review.review_rejected",
+            "polygit_ci.pipeline_completed",
+            "polygit_ci.test_results_reported",
+        ],
+        retention_days: 90,
+        aggregation_window_hours: 24,
+    }
+}
+
+/// Approval pattern compliance, policy exception frequency, branch protection
+/// adherence, CODEOWNERS coverage gaps, governance escalation patterns.
+circuit vcs_governance_domain() -> MeaningDomainConfig
+    lex polylabs/polygit/cognitive
+    @status production
+    @precision C
+{
+    MeaningDomainConfig {
+        name: "vcs/governance",
+        lex_namespace: POLYGIT_CE_LEX,
+        crystallization_threshold: 20,
+        impact_weight: 0.3,
+        event_sources: [
+            "polygit_governance.policy_evaluated",
+            "polygit_governance.policy_exception",
+            "polygit_governance.approval_completed",
+            "polygit_rbac.permission_checked",
+            "polygit_branch.protection_override",
+        ],
+        retention_days: 180,
+        aggregation_window_hours: 24,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §2  Noise Filter Configuration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polygit_noise_filter() -> NoiseFilterConfig
+    lex polylabs/polygit/cognitive
+    @status production
+    @precision C
+{
+    NoiseFilterConfig {
+        name: "polygit_vcs_noise_filter",
+        lex_namespace: POLYGIT_CE_LEX,
+        suppress_rules: [
+            NoiseRule { pattern: "committer.is_bot == true", reason: "bot_commits" },
+            NoiseRule { pattern: "commit.message starts_with 'chore(deps)'", reason: "dependency_bumps" },
+            NoiseRule { pattern: "pipeline.trigger == 'retry' && pipeline.retry_count > 1", reason: "ci_retry_storms" },
+            NoiseRule { pattern: "file.path matches '*.lock' || file.path matches '*.pb.go'", reason: "auto_generated_code" },
+            NoiseRule { pattern: "pipeline.result == 'cache_miss_rebuild'", reason: "cache_invalidation" },
+        ],
+        amplify_rules: [
+            NoiseRule { pattern: "review.verdict_conflict == true", reason: "review_disagreement" },
+            NoiseRule { pattern: "branch.force_push_to_protected == true", reason: "governance_exception" },
+            NoiseRule { pattern: "commit.secrets_detected == true", reason: "security_alert" },
+            NoiseRule { pattern: "commit.unsigned && repo.requires_signing", reason: "unsigned_commit" },
+        ],
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §3  SME Panel Configurations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit code_review_quality_panel() -> SmePanelConfig
+    lex polylabs/polygit/cognitive
+    @status production
+    @precision C
+{
+    SmePanelConfig {
+        name: "code_review_quality",
+        lex_namespace: POLYGIT_CE_LEX,
+        domain_sources: ["vcs/code_quality", "vcs/commit_patterns"],
+        metrics: [
+            "review_throughput_per_day",
+            "review_depth_score",
+            "time_to_first_review_p50",
+            "time_to_first_review_p95",
+            "rubber_stamp_detection_rate",
+            "reviewer_load_balance_index",
+        ],
+        triggers: [
+            SmePanelTrigger { condition: "review_depth_score < 0.3 for 5 consecutive PRs", severity: "warning" },
+            SmePanelTrigger { condition: "single_reviewer_approval_rate > 0.6", severity: "warning" },
+        ],
+    }
+}
+
+circuit ci_pipeline_optimization_panel() -> SmePanelConfig
+    lex polylabs/polygit/cognitive
+    @status production
+    @precision C
+{
+    SmePanelConfig {
+        name: "ci_pipeline_optimization",
+        lex_namespace: POLYGIT_CE_LEX,
+        domain_sources: ["vcs/code_quality", "vcs/commit_patterns"],
+        metrics: [
+            "pipeline_duration_p50",
+            "pipeline_duration_p95",
+            "pipeline_duration_p99",
+            "flaky_test_rate",
+            "cache_hit_rate",
+            "parallelization_efficiency",
+            "failure_root_cause_clusters",
+        ],
+        triggers: [
+            SmePanelTrigger { condition: "pipeline_duration_p95 > sla_threshold", severity: "critical" },
+            SmePanelTrigger { condition: "flaky_test_rate > 0.05", severity: "warning" },
+            SmePanelTrigger { condition: "cache_hit_rate < 0.70", severity: "warning" },
+        ],
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §4  Orchestrator — register all CE components
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polygit_register_ce(product_lex: string) -> bool
+    lex polylabs/polygit/cognitive
+    @status production
+    @precision B
+    @attested true
+    observe metrics: [ce_domain_count, ce_panel_count]
+    meters [compute_cycles]
+{
+    let ok1 = register_meaning_domain(product_lex, vcs_commit_patterns_domain())
+    let ok2 = register_meaning_domain(product_lex, vcs_code_quality_domain())
+    let ok3 = register_meaning_domain(product_lex, vcs_governance_domain())
+
+    let ok4 = register_noise_filter(product_lex, polygit_noise_filter())
+
+    let ok5 = register_sme_panel(product_lex, code_review_quality_panel())
+    let ok6 = register_sme_panel(product_lex, ci_pipeline_optimization_panel())
+
+    ok1 && ok2 && ok3 && ok4 && ok5 && ok6
+}
+
+// ── Golden Tests ───────────────────────────────────────────────────────────────
+
+#[test]
+circuit test_meaning_domains_valid()
+    lex polylabs/polygit/cognitive  @status test
+{
+    let d1 = vcs_commit_patterns_domain()
+    let d2 = vcs_code_quality_domain()
+    let d3 = vcs_governance_domain()
+    assert d1.crystallization_threshold == 50
+    assert d2.crystallization_threshold == 30
+    assert d3.crystallization_threshold == 20
+    let total_weight = d1.impact_weight + d2.impact_weight + d3.impact_weight
+    assert total_weight == 1.0
+}
+
+#[test]
+circuit test_noise_filter_rules()
+    lex polylabs/polygit/cognitive  @status test
+{
+    let nf = polygit_noise_filter()
+    assert len(nf.suppress_rules) == 5
+    assert len(nf.amplify_rules) == 4
+}
+
+#[test]
+circuit test_sme_panels_configured()
+    lex polylabs/polygit/cognitive  @status test
+{
+    let p1 = code_review_quality_panel()
+    let p2 = ci_pipeline_optimization_panel()
+    assert len(p1.metrics) >= 5
+    assert len(p2.metrics) >= 5
+    assert len(p1.triggers) >= 1
+    assert len(p2.triggers) >= 1
+}
+
+#[test]
+circuit test_register_ce_orchestrator()
+    lex polylabs/polygit/cognitive  @status test
+{
+    let result = polygit_register_ce("polylabs/polygit")
+    assert result == true
+}
