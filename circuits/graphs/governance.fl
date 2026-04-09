@@ -1,5 +1,5 @@
 /// governance.fl — Repository governance actions
-/// lex polylabs/poly-git/governance
+/// lex polyqlabs/poly-git/governance
 ///
 /// Repo creation is a genesis event. ACL/policy changes are governance actions.
 /// All actions are signed, versioned, and merkle-rooted.
@@ -34,7 +34,7 @@ circuit repo_create(
     classification: bytes(32),
     signing_key: bytes(4896)
 ) -> GovernanceAction
-    lex polylabs/poly-git/governance
+    lex polyqlabs/poly-git/governance
     precision A
     povc true
     @guard(block_on: owner_unauthorized)
@@ -77,7 +77,7 @@ circuit acl_grant(
     actor_id: bytes(16),
     signing_key: bytes(4896)
 ) -> GovernanceAction
-    lex polylabs/poly-git/governance
+    lex polyqlabs/poly-git/governance
     precision A
     povc true
     @guard(block_on: actor_not_admin)
@@ -115,7 +115,7 @@ circuit acl_revoke(
     actor_id: bytes(16),
     signing_key: bytes(4896)
 ) -> GovernanceAction
-    lex polylabs/poly-git/governance
+    lex polyqlabs/poly-git/governance
     precision A
     povc true
     @guard(block_on: actor_not_admin)
@@ -144,7 +144,7 @@ circuit branch_protect(
     actor_id: bytes(16),
     signing_key: bytes(4896)
 ) -> GovernanceAction
-    lex polylabs/poly-git/governance
+    lex polyqlabs/poly-git/governance
     precision A
     povc true
     @guard(block_on: actor_not_maintainer)
@@ -174,7 +174,7 @@ circuit repo_transfer(
     actor_id: bytes(16),
     signing_key: bytes(4896)
 ) -> GovernanceAction
-    lex polylabs/poly-git/governance
+    lex polyqlabs/poly-git/governance
     precision A
     povc true
     @guard(block_on: actor_not_owner)

@@ -1,10 +1,10 @@
-# Poly Git
+# Q Git
 
 PQ-signed version control with enterprise governance, built on eStream v0.22.0. 100% FastLang. No hand-written Rust.
 
 ## Overview
 
-Poly Git is an enterprise-grade git platform where every commit is PQ-signed (ML-DSA-87), every object is scatter-stored (k-of-n erasure-coded across providers/jurisdictions), and every push passes through lex-governed RBAC with AI-assisted code review. Built as a thin product layer over eStream's `es-git` CLI and three production FastLang governance circuits.
+Q Git is an enterprise-grade git platform where every commit is PQ-signed (ML-DSA-87), every object is scatter-stored (k-of-n erasure-coded across providers/jurisdictions), and every push passes through lex-governed RBAC with AI-assisted code review. Built as a thin product layer over eStream's `es-git` CLI and three production FastLang governance circuits.
 
 ## Architecture
 

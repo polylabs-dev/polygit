@@ -1,7 +1,7 @@
-// Poly Git LFS — Large file storage via scatter-CAS (v0.11.0)
+// Q Git LFS — Large file storage via scatter-CAS (v0.11.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git/lfs
+//   esn/global/org/polyqlabs/git/lfs
 //   Large files (binaries, assets, models) are stored in scatter-CAS with
 //   pointer files in the git tree. Replaces Git LFS with PQ-native storage.
 //
@@ -14,9 +14,9 @@
 //   LfsObject stored in scatter-CAS (large, erasure-coded)
 //   SHA3-256 content hash links pointer → object
 
-import polykit_identity
-import polykit_metering
-import polygit_repository
+import qkit_identity
+import qkit_metering
+import qgit_repository
 
 // ── Data declarations ───────────────────────────────────────────
 
@@ -42,7 +42,7 @@ data LfsObject : git v1 {
     expires_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/lfs
+    govern lex esn/global/org/polyqlabs/git/lfs
     cortex {
         redact [uploader]
         infer on_write
@@ -60,7 +60,7 @@ data LfsPointer : git v1 {
     created_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/lfs
+    govern lex esn/global/org/polyqlabs/git/lfs
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -75,7 +75,7 @@ data LfsQuota : git v1 {
     updated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/lfs
+    govern lex esn/global/org/polyqlabs/git/lfs
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -104,7 +104,7 @@ circuit store_lfs_object(
     expires_at: u64
 ) -> (LfsObject, LfsPointer)
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/lfs
+    lex esn/global/org/polyqlabs/git/lfs
     precision C
     observe metrics: [lfs_objects_stored, lfs_bytes_stored, lfs_scatter_chunks]
     monitor "lfs_storage_rate" { lfs_objects_stored < 200 per 3600s }
@@ -138,7 +138,7 @@ circuit store_lfs_object(
     }
     eslite_insert("lfs_objects", object_id, obj)
     let pointer_content = concat(
-        encode("version https://poly-git-lfs.polylabs.dev/spec/v1\n"),
+        encode("version https://poly-git-lfs.polyqlabs.dev/spec/v1\n"),
         encode("oid sha3-256:"), encode_hex(content_hash), encode("\n"),
         encode("size "), encode_u64(len(content)), encode("\n")
     )
@@ -175,7 +175,7 @@ circuit resolve_lfs_pointer(
     pointer_id: bytes(32)
 ) -> LfsObject
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/lfs
+    lex esn/global/org/polyqlabs/git/lfs
     precision C
     observe metrics: [lfs_pointer_resolutions, lfs_cache_hits, lfs_bytes_fetched]
     monitor "lfs_fetch_rate" { lfs_pointer_resolutions < 1000 per 3600s }
@@ -206,7 +206,7 @@ circuit resolve_lfs_by_path(
     path: string
 ) -> LfsObject
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/lfs
+    lex esn/global/org/polyqlabs/git/lfs
     precision C
     observe metrics: [lfs_path_resolutions]
     monitor "lfs_path_resolution_rate" { lfs_path_resolutions < 1000 per 3600s }
@@ -228,7 +228,7 @@ circuit delete_lfs_object(
     actor: bytes(32)
 ) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/lfs
+    lex esn/global/org/polyqlabs/git/lfs
     precision C
     observe metrics: [lfs_objects_deleted, lfs_bytes_freed]
     monitor "lfs_deletion_rate" { lfs_objects_deleted < 100 per 3600s }
@@ -258,7 +258,7 @@ circuit delete_lfs_object(
 // --- Check LFS quota (internal helper) ---
 circuit check_lfs_quota(repo_id: bytes(32), additional_bytes: u64) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/lfs
+    lex esn/global/org/polyqlabs/git/lfs
     precision C
     observe metrics: [lfs_quota_checks, lfs_quota_exceeded]
     monitor "lfs_quota_violations" { lfs_quota_exceeded < 20 per 3600s }

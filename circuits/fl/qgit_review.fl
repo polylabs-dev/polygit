@@ -1,7 +1,7 @@
-// Poly Git Review — Cortex AI-powered code review with Blessed Repo pattern (v0.11.0)
+// Q Git Review — Cortex AI-powered code review with Blessed Repo pattern (v0.11.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git/review
+//   esn/global/org/polyqlabs/git/review
 //   sub_lex review_session fan_in — per-review session telemetry
 //   AI-powered diff evaluation via Cortex ESLM with anomaly detection.
 //
@@ -15,10 +15,10 @@
 //   Each approval is ML-DSA-87 signed. Cortex AI provides advisory scoring
 //   but human reviewers hold final authority.
 
-import polykit_identity
-import polykit_governance
-import polygit_repository
-import polygit_commit
+import qkit_identity
+import qkit_governance
+import qgit_repository
+import qgit_commit
 
 type ReviewStatus = enum {
     Pending,
@@ -38,7 +38,7 @@ data ReviewRequest : git v1 {
     created_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/review
+    govern lex esn/global/org/polyqlabs/git/review
     cortex {
         redact [author]
         infer on_write
@@ -56,7 +56,7 @@ data ReviewResult : git v1 {
     reviewed_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/review
+    govern lex esn/global/org/polyqlabs/git/review
     cortex {
         redact [reviewer, reviewer_pubkey, signature]
         infer on_write
@@ -74,7 +74,7 @@ data AiEvaluation : git v1 {
     confidence: u16,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/review
+    govern lex esn/global/org/polyqlabs/git/review
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -90,7 +90,7 @@ data BlessedPromotion : git v1 {
     promotion_signature: bytes(4627),
 }
     store kv
-    govern lex esn/global/org/polylabs/git/review
+    govern lex esn/global/org/polyqlabs/git/review
     cortex {
         redact [promotion_signature]
         infer on_write
@@ -107,7 +107,7 @@ data ReviewPolicy : git v1 {
     block_on_security_flags: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/review
+    govern lex esn/global/org/polyqlabs/git/review
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -146,7 +146,7 @@ circuit submit_review(
     author: bytes(32)
 ) -> ReviewRequest
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/review {
+    lex esn/global/org/polyqlabs/git/review {
         sub_lex review_session fan_in
     }
     precision C
@@ -181,7 +181,7 @@ circuit submit_review(
 // --- AI-powered diff evaluation via Cortex ESLM ---
 circuit evaluate_diff(repo_id: RepoId, review_id: bytes(16), diff: DiffResult) -> AiEvaluation
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/review {
+    lex esn/global/org/polyqlabs/git/review {
         sub_lex review_session fan_in
     }
     precision C
@@ -231,7 +231,7 @@ circuit approve_commit(
     ai_eval: AiEvaluation
 ) -> ReviewResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/git/review {
+    lex esn/global/org/polyqlabs/git/review {
         sub_lex review_session fan_in
     }
     precision C
@@ -275,7 +275,7 @@ circuit promote_to_blessed(
     promotion_sk: bytes(4896)
 ) -> BlessedPromotion
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/git/review
+    lex esn/global/org/polyqlabs/git/review
     precision C
     constant_time true
     observe metrics: [promotions, promotion_failures, approval_counts]
@@ -318,7 +318,7 @@ circuit promote_to_blessed(
 // --- Check review policy compliance for a commit ---
 circuit check_review_policy(repo_id: RepoId, commit_id: ObjectId) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/review
+    lex esn/global/org/polyqlabs/git/review
     precision C
     observe metrics: [policy_checks, policy_violations]
     monitor "policy_violations" { policy_violations < 10 per 3600s }

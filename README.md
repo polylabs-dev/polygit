@@ -28,7 +28,7 @@ es-git CLI ──(estream:// Wire protocol)──> estream-node
 - **Governance actions** — repo creation as genesis event, all config changes are Cortex-governed
 - **AI-native** — `ai_feed` directives, corpus observations, anomaly detection on FSMs
 - **Wire protocol** — VCS opcodes 0xA0-0xAC on the standard eStream UDP wire (port 5000)
-- **PolyKit integration** — identity, metering, telemetry, rate limiting, sanitization, classification, console
+- **QKit integration** — identity, metering, telemetry, rate limiting, sanitization, classification, console
 
 ## Circuit Layout
 
@@ -48,12 +48,12 @@ circuits/
 ├── access/         — ACL enforcement + rate limiting
 │   ├── acl.fl
 │   └── rate_limit.fl
-├── integration/    — PolyKit service bindings (metering, telemetry, sanitize, classify)
+├── integration/    — QKit service bindings (metering, telemetry, sanitize, classify)
 │   ├── metering.fl
 │   ├── telemetry.fl
 │   ├── sanitize.fl
 │   └── classify.fl
-├── signing/        — SPARK signing via polykit-identity
+├── signing/        — SPARK signing via qkit-identity
 │   └── manifest.fl
 ├── corpus/         — AI observation data for accretive intelligence
 │   └── observation.fl
@@ -69,13 +69,13 @@ circuits/
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| polykit-identity | ^0.2.0 | SPARK auth, ML-DSA-87 signing |
-| polykit-metering | ^0.2.0 | 8-dimension resource metering |
-| polykit-telemetry | ^0.2.0 | StreamSight telemetry pipeline |
-| polykit-rate-limiter | ^0.2.0 | FIFO rate limiter with backpressure |
-| polykit-sanitize | ^0.2.0 | 3-stage compliance sanitization |
-| polykit-eslm-classify | ^0.2.0 | ESLM content classification |
-| polykit-console | ^0.2.0 | Console widget framework + RBAC |
+| qkit-identity | ^0.2.0 | SPARK auth, ML-DSA-87 signing |
+| qkit-metering | ^0.2.0 | 8-dimension resource metering |
+| qkit-telemetry | ^0.2.0 | StreamSight telemetry pipeline |
+| qkit-rate-limiter | ^0.2.0 | FIFO rate limiter with backpressure |
+| qkit-sanitize | ^0.2.0 | 3-stage compliance sanitization |
+| qkit-eslm-classify | ^0.2.0 | ESLM content classification |
+| qkit-console | ^0.2.0 | Console widget framework + RBAC |
 
 ## Wire Protocol
 
@@ -138,4 +138,4 @@ estream-dev test --journey poly-git
 
 ## License
 
-Proprietary — PolyQuantum Foundation. Licensed to Poly Labs via Commercial Services Agreement.
+Proprietary — PolyQuantum Foundation. Licensed to PolyQ Labs via Commercial Services Agreement.

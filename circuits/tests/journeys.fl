@@ -1,13 +1,13 @@
 /// poly-git journey tests — end-to-end lifecycle validation
-/// lex polylabs/poly-git/tests
+/// lex polyqlabs/poly-git/tests
 ///
 /// These journeys exercise the complete VCS lifecycle through the
 /// poly-git SmartCircuit: identity derivation, repo creation,
 /// push/pull FSM traversal, governance actions, and safety features.
 
-import polykit_identity from "polykit-identity@^0.2.0"
-import polykit_metering from "polykit-metering@^0.2.0"
-import polykit_rate_limiter from "polykit-rate-limiter@^0.2.0"
+import qkit_identity from "qkit-identity@^0.2.0"
+import qkit_metering from "qkit-metering@^0.2.0"
+import qkit_rate_limiter from "qkit-rate-limiter@^0.2.0"
 
 // ── Push Lifecycle Journey ──────────────────────────────────────────────────
 
@@ -16,8 +16,8 @@ journey push_full_lifecycle {
     party server
 
     // 1. Derive SPARK identity
-    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
-    step alice user = polykit_identity::derive_user_id(alice.keys.signing_public_key)
+    step alice keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
+    step alice user = qkit_identity::derive_user_id(alice.keys.signing_public_key)
 
     // 2. Create repo (genesis governance action)
     step alice repo = repo_create(
@@ -43,7 +43,7 @@ journey push_full_lifecycle {
     }
 
     // 5. Sign manifest
-    step alice sig = polykit_identity::sign_message(
+    step alice sig = qkit_identity::sign_message(
         alice.keys.signing_secret_key,
         encode(alice.manifest)
     )
@@ -73,8 +73,8 @@ journey pull_full_lifecycle {
     party bob
     party server
 
-    step bob keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
-    step bob user = polykit_identity::derive_user_id(bob.keys.signing_public_key)
+    step bob keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
+    step bob user = qkit_identity::derive_user_id(bob.keys.signing_public_key)
 
     // Check read access
     step server access = check_permission(bob.user, "polylabs-dev/test-repo", "read")
@@ -100,7 +100,7 @@ journey push_rollback_on_failure {
     party alice
     party server
 
-    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step alice keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
 
     // Start push FSM
     step server fsm_start = fsm_advance push_lifecycle to Receiving
@@ -128,7 +128,7 @@ journey push_timeout_enforcement {
     party alice
     party server
 
-    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step alice keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
 
     // Start receiving objects
     step server fsm_start = fsm_advance push_lifecycle to Receiving
@@ -149,7 +149,7 @@ journey push_retry_on_transient_failure {
     party alice
     party server
 
-    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step alice keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
 
     step server fsm_start = fsm_advance push_lifecycle to Receiving
     step server fsm_recv = fsm_advance push_lifecycle from Receiving to Validating
@@ -179,13 +179,13 @@ journey governance_repo_lifecycle {
     party writer
     party reader
 
-    step admin keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
-    step writer keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
-    step reader keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step admin keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
+    step writer keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
+    step reader keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
 
-    step admin user = polykit_identity::derive_user_id(admin.keys.signing_public_key)
-    step writer user = polykit_identity::derive_user_id(writer.keys.signing_public_key)
-    step reader user = polykit_identity::derive_user_id(reader.keys.signing_public_key)
+    step admin user = qkit_identity::derive_user_id(admin.keys.signing_public_key)
+    step writer user = qkit_identity::derive_user_id(writer.keys.signing_public_key)
+    step reader user = qkit_identity::derive_user_id(reader.keys.signing_public_key)
 
     // Genesis: create repo
     step admin create = repo_create(
@@ -236,8 +236,8 @@ journey guard_fail_closed {
     party attacker
     party server
 
-    step attacker keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
-    step attacker user = polykit_identity::derive_user_id(attacker.keys.signing_public_key)
+    step attacker keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
+    step attacker user = qkit_identity::derive_user_id(attacker.keys.signing_public_key)
 
     // Attempt push without ACL entry (guard should fail closed)
     step server access = check_permission(attacker.user, "polylabs-dev/private-repo", "write")
@@ -260,8 +260,8 @@ journey concurrent_push_safety {
     party bob
     party server
 
-    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
-    step bob keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
+    step alice keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
+    step bob keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
 
     // Both try to push to same ref simultaneously
     step server alice_fsm = fsm_advance push_lifecycle to Receiving
@@ -287,8 +287,8 @@ journey ai_corpus_observation {
     party alice
     party server
 
-    step alice keys = polykit_identity::derive_keys(bytes(32), "poly-git-v1")
-    step alice user = polykit_identity::derive_user_id(alice.keys.signing_public_key)
+    step alice keys = qkit_identity::derive_keys(bytes(32), "q-git-v1")
+    step alice user = qkit_identity::derive_user_id(alice.keys.signing_public_key)
 
     // Complete a push
     step server push = fsm_advance push_lifecycle from Receiving to Merged

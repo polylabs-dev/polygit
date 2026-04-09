@@ -1,5 +1,5 @@
 /// manifest.fl — Push/pull manifest for object transfer
-/// lex polylabs/poly-git/data
+/// lex polyqlabs/poly-git/data
 
 data PushManifest : vcs v1 {
     repo_id: bytes(32),

@@ -1,5 +1,5 @@
 /// observation.fl — AI corpus observation data for accretive intelligence
-/// lex polylabs/poly-git/corpus
+/// lex polyqlabs/poly-git/corpus
 
 data VcsObservation : vcs v1 {
     repo_id: bytes(32),
@@ -39,7 +39,7 @@ circuit record_push_observation(
     protected: bool,
     classification: bytes(32)
 ) -> VcsObservation
-    lex polylabs/poly-git/corpus
+    lex polyqlabs/poly-git/corpus
     precision B
     observe metrics: [observations_recorded]
 {
@@ -71,7 +71,7 @@ circuit record_pull_observation(
     timeout: bool,
     retries: u8
 ) -> VcsObservation
-    lex polylabs/poly-git/corpus
+    lex polyqlabs/poly-git/corpus
     precision B
     observe metrics: [observations_recorded]
 {

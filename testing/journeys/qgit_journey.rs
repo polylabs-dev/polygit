@@ -11,7 +11,7 @@ pub struct PolygitJourney;
 
 impl Journey for PolygitJourney {
     fn name(&self) -> &str {
-        "polygit_e2e"
+        "qgit_e2e"
     }
 
     fn description(&self) -> &str {
@@ -21,13 +21,13 @@ impl Journey for PolygitJourney {
     fn parties(&self) -> Vec<JourneyParty> {
         vec![
             JourneyParty::new("alice")
-                .with_spark_context("poly-git-v1")
+                .with_spark_context("q-git-v1")
                 .with_role("maintainer"),
             JourneyParty::new("bob")
-                .with_spark_context("poly-git-v1")
+                .with_spark_context("q-git-v1")
                 .with_role("contributor"),
             JourneyParty::new("charlie")
-                .with_spark_context("poly-git-v1")
+                .with_spark_context("q-git-v1")
                 .with_role("reviewer"),
         ]
     }
@@ -38,7 +38,7 @@ impl Journey for PolygitJourney {
             JourneyStep::new("alice_creates_repo")
                 .party("alice")
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let repo = ctx.polygit().create_repo(
+                    let repo = ctx.qgit().create_repo(
                         "quantum-lib",
                         &["bob", "charlie"],
                         "ml-dsa-87",
@@ -51,12 +51,12 @@ impl Journey for PolygitJourney {
                     assert_eq!(repo.signature_algo, "ml-dsa-87");
                     assert_eq!(repo.collaborators.len(), 2);
 
-                    assert_metric_emitted!(ctx, "polygit.repo.created", {
+                    assert_metric_emitted!(ctx, "qgit.repo.created", {
                         "sig_algo" => "ml-dsa-87",
                         "collaborator_count" => "2",
                     });
 
-                    assert_povc_witness!(ctx, "polygit.repo.create", {
+                    assert_povc_witness!(ctx, "qgit.repo.create", {
                         witness_type: "repo_genesis",
                         repo_id: &repo.id,
                     });
@@ -72,12 +72,12 @@ impl Journey for PolygitJourney {
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let repo_id = ctx.get::<String>("repo_id");
 
-                    let tree = ctx.polygit().stage_files(&repo_id, &[
+                    let tree = ctx.qgit().stage_files(&repo_id, &[
                         ("src/lib.rs", b"pub fn lattice_mul() {}"),
                         ("Cargo.toml", b"[package]\nname = \"quantum-lib\""),
                     ])?;
 
-                    let commit = ctx.polygit().commit(
+                    let commit = ctx.qgit().commit(
                         &repo_id,
                         &tree.tree_hash,
                         "feat: add lattice multiplication stub",
@@ -89,15 +89,15 @@ impl Journey for PolygitJourney {
                     assert_eq!(commit.signature_algo, "ml-dsa-87");
                     assert!(commit.parent_hash.is_some());
 
-                    let push = ctx.polygit().push(&repo_id, "main", &commit.hash)?;
+                    let push = ctx.qgit().push(&repo_id, "main", &commit.hash)?;
                     assert!(push.accepted);
 
-                    assert_metric_emitted!(ctx, "polygit.commit.pushed", {
+                    assert_metric_emitted!(ctx, "qgit.commit.pushed", {
                         "branch" => "main",
                         "signed" => "true",
                     });
 
-                    assert_blinded!(ctx, "polygit.commit.pushed", {
+                    assert_blinded!(ctx, "qgit.commit.pushed", {
                         field: "author_id",
                         blinding: "hmac_sha3",
                     });
@@ -114,7 +114,7 @@ impl Journey for PolygitJourney {
                     let repo_id = ctx.get::<String>("repo_id");
                     let commit_hash = ctx.get::<String>("bob_commit_hash");
 
-                    let review = ctx.polygit().submit_review(
+                    let review = ctx.qgit().submit_review(
                         &repo_id,
                         &commit_hash,
                         "approve",
@@ -126,17 +126,17 @@ impl Journey for PolygitJourney {
                     assert!(review.pq_signed);
                     assert_eq!(review.verdict, "approve");
 
-                    assert_povc_witness!(ctx, "polygit.review", {
+                    assert_povc_witness!(ctx, "qgit.review", {
                         witness_type: "code_review",
                         repo_id: &repo_id,
                         commit_hash: &commit_hash,
                     });
 
-                    assert_metric_emitted!(ctx, "polygit.review.submitted", {
+                    assert_metric_emitted!(ctx, "qgit.review.submitted", {
                         "verdict" => "approve",
                     });
 
-                    assert_blinded!(ctx, "polygit.review.submitted", {
+                    assert_blinded!(ctx, "qgit.review.submitted", {
                         field: "reviewer_id",
                         blinding: "hmac_sha3",
                     });
@@ -153,7 +153,7 @@ impl Journey for PolygitJourney {
                     let repo_id = ctx.get::<String>("repo_id");
                     let commit_hash = ctx.get::<String>("bob_commit_hash");
 
-                    let merge = ctx.polygit().merge(
+                    let merge = ctx.qgit().merge(
                         &repo_id,
                         "main",
                         &commit_hash,
@@ -166,12 +166,12 @@ impl Journey for PolygitJourney {
                     assert!(merge.signature_valid);
                     assert_eq!(merge.strategy, MergeStrategy::FastForward);
 
-                    assert_metric_emitted!(ctx, "polygit.merge.complete", {
+                    assert_metric_emitted!(ctx, "qgit.merge.complete", {
                         "branch" => "main",
                         "strategy" => "fast_forward",
                     });
 
-                    assert_povc_witness!(ctx, "polygit.merge", {
+                    assert_povc_witness!(ctx, "qgit.merge", {
                         witness_type: "branch_merge",
                         repo_id: &repo_id,
                     });
@@ -189,7 +189,7 @@ impl Journey for PolygitJourney {
                     let root_hash = ctx.get::<String>("repo_root_hash");
                     let merge_hash = ctx.get::<String>("merge_commit_hash");
 
-                    let graph = ctx.polygit().repo_graph(&repo_id)?;
+                    let graph = ctx.qgit().repo_graph(&repo_id)?;
                     assert!(graph.is_dag());
                     assert!(graph.contains_path(&root_hash, &merge_hash));
                     assert!(graph.all_signatures_valid());
@@ -204,7 +204,7 @@ impl Journey for PolygitJourney {
                     assert!(merkle.chain_intact);
                     assert!(merkle.root_hash_valid);
 
-                    assert_metric_emitted!(ctx, "polygit.graph.verified", {
+                    assert_metric_emitted!(ctx, "qgit.graph.verified", {
                         "dag_valid" => "true",
                         "all_sigs_valid" => "true",
                     });
@@ -218,7 +218,7 @@ impl Journey for PolygitJourney {
                 .party("alice")
                 .depends_on(&["verify_repo_graph_state"])
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let telemetry = ctx.streamsight().drain_telemetry("poly-git-v1");
+                    let telemetry = ctx.streamsight().drain_telemetry("q-git-v1");
 
                     for event in &telemetry {
                         assert_blinded!(ctx, &event.event_type, {
@@ -238,15 +238,15 @@ impl Journey for PolygitJourney {
                     }
 
                     let cortex = CortexVisibility::new(ctx);
-                    cortex.assert_redacted("polygit", RedactPolicy::ContentFields)?;
-                    cortex.assert_obfuscated("polygit", ObfuscatePolicy::PartyIdentifiers)?;
+                    cortex.assert_redacted("qgit", RedactPolicy::ContentFields)?;
+                    cortex.assert_obfuscated("qgit", ObfuscatePolicy::PartyIdentifiers)?;
 
                     assert!(telemetry.len() >= 5, "Expected at least 5 telemetry events");
 
                     for event in &telemetry {
                         assert!(
-                            event.namespace.starts_with("poly-git-v1"),
-                            "Telemetry leaked outside poly-git-v1 namespace: {}",
+                            event.namespace.starts_with("q-git-v1"),
+                            "Telemetry leaked outside q-git-v1 namespace: {}",
                             event.namespace
                         );
                     }
@@ -260,15 +260,15 @@ impl Journey for PolygitJourney {
     fn metrics(&self) -> JourneyMetrics {
         JourneyMetrics {
             expected_events: vec![
-                "polygit.repo.created",
-                "polygit.commit.pushed",
-                "polygit.review.submitted",
-                "polygit.merge.complete",
-                "polygit.graph.verified",
+                "qgit.repo.created",
+                "qgit.commit.pushed",
+                "qgit.review.submitted",
+                "qgit.merge.complete",
+                "qgit.graph.verified",
             ],
             max_duration_ms: 60_000,
             required_povc_witnesses: 4,
-            lex_namespace: "poly-git-v1",
+            lex_namespace: "q-git-v1",
         }
     }
 }
@@ -279,10 +279,10 @@ mod tests {
     use estream_test::convoy::ConvoyRunner;
 
     #[tokio::test]
-    async fn run_polygit_journey() {
+    async fn run_qgit_journey() {
         let runner = ConvoyRunner::new()
             .with_es_git()
-            .with_streamsight("poly-git-v1")
+            .with_streamsight("q-git-v1")
             .with_stratum()
             .with_cortex();
 

@@ -1,7 +1,7 @@
-// Poly Git Repository — scatter-CAS object model and repository management (v0.11.0)
+// Q Git Repository — scatter-CAS object model and repository management (v0.11.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git/repo
+//   esn/global/org/polyqlabs/git/repo
 //   Every git object (blob, tree, commit, tag) is content-addressed via SHA3-256
 //   and scatter-stored with k-of-n erasure coding across providers.
 //
@@ -16,8 +16,8 @@
 //   ObjectId = SHA3-256(object_content)  (replaces SHA-1)
 //   Objects are stored as scatter-cas chunks with configurable scatter policy.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 type RepoId = bytes(32)
 type ObjectId = bytes(32)
@@ -41,7 +41,7 @@ data RepoConfig : git v1 {
     owner_pubkey: bytes(2592),
 }
     store kv
-    govern lex esn/global/org/polylabs/git/repo
+    govern lex esn/global/org/polyqlabs/git/repo
     cortex {
         redact [owner_pubkey]
         infer on_write
@@ -57,7 +57,7 @@ data GitObject : git v1 {
     stored_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/repo
+    govern lex esn/global/org/polyqlabs/git/repo
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -71,7 +71,7 @@ data RepoState : git v1 {
     last_push_ns: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/repo
+    govern lex esn/global/org/polyqlabs/git/repo
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -87,7 +87,7 @@ stream object_events: event<GitObject>
 @guard(block_on: repo_quota_exceeded)
 circuit create_repo(org_id: bytes(32), name: string, owner_pk: bytes(2592), scatter_k: u8, scatter_n: u8) -> RepoConfig
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/repo
+    lex esn/global/org/polyqlabs/git/repo
     precision C
     observe metrics: [repo_creations, org_id, scatter_policy]
     monitor "repo_creation_rate" { repo_creations < 100 per 60s }
@@ -121,7 +121,7 @@ circuit create_repo(org_id: bytes(32), name: string, owner_pk: bytes(2592), scat
 // --- Initialize repository with empty tree and root commit (Wire opcode 0xA0 REPO_INIT) ---
 circuit init_repo(config: RepoConfig, signing_sk: bytes(4896)) -> RepoState
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/git/repo
+    lex esn/global/org/polyqlabs/git/repo
     precision C
     constant_time true
     observe metrics: [repo_inits, initial_commit_sign]
@@ -169,7 +169,7 @@ circuit init_repo(config: RepoConfig, signing_sk: bytes(4896)) -> RepoState
 // --- Store a git object in scatter-CAS (Wire opcode 0xA1 OBJECT_PUSH) ---
 circuit store_object(repo_id: RepoId, obj_type: ObjectType, content: bytes) -> GitObject
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/repo
+    lex esn/global/org/polyqlabs/git/repo
     precision C
     observe metrics: [object_stores, object_type, content_size]
     monitor "object_store_throughput" { object_stores > 0 }
@@ -200,7 +200,7 @@ circuit store_object(repo_id: RepoId, obj_type: ObjectType, content: bytes) -> G
 // --- Retrieve a git object from scatter-CAS (Wire opcode 0xA2 OBJECT_PULL) ---
 circuit get_object(repo_id: RepoId, object_id: ObjectId) -> GitObject
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/repo
+    lex esn/global/org/polyqlabs/git/repo
     precision C
     observe metrics: [object_gets, cache_hits, cache_misses]
     monitor "object_get_latency" { get_latency_ms < 100 }
@@ -220,7 +220,7 @@ circuit get_object(repo_id: RepoId, object_id: ObjectId) -> GitObject
 @guard(block_on: deletion_cooldown_active)
 circuit delete_repo(repo_id: RepoId, requester_pk: bytes(2592)) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/repo
+    lex esn/global/org/polyqlabs/git/repo
     precision C
     observe metrics: [repo_deletions, objects_purged]
     monitor "deletion_audit" { repo_deletions < 10 per 3600s }

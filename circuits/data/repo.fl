@@ -1,5 +1,5 @@
 /// repo.fl — Repository configuration and metadata
-/// lex polylabs/poly-git/data
+/// lex polyqlabs/poly-git/data
 
 data RepoConfig : vcs v1 {
     repo_id: bytes(32),

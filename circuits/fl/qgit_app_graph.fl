@@ -1,12 +1,12 @@
 /// Spec: specs/POLYGIT_CE_APP_GRAPH_SPEC.md
 /// PolyGit App Graph — defines 13 ModuleNode declarations for PolyGit,
 /// registers intra-graph dependency edges and cross-graph bridges to es-vcs,
-/// PolyKit CI, and PolyDocs.
+/// QKit CI, and PolyDocs.
 ///
-/// Epic: polygit#TBD (CE + App Graph Integration)
-/// govern lex polylabs/polygit
+/// Epic: qgit#TBD (CE + App Graph Integration)
+/// govern lex polyqlabs/qgit
 
-lex polylabs/polygit
+lex polyqlabs/qgit
 
 @target software
 @codegen_targets ["wasm", "rust"]
@@ -32,17 +32,17 @@ import "core/deployment/cross_graph_edges.fl" {
 const POLYGIT_VERSION_MAJOR: u32 = 0
 const POLYGIT_VERSION_MINOR: u32 = 2
 const POLYGIT_VERSION_PATCH: u32 = 0
-const POLYGIT_APP_LEX: string = "polylabs/polygit"
+const POLYGIT_APP_LEX: string = "polyqlabs/qgit"
 const POLYGIT_MODULE_COUNT: u32 = 13
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal helper — common ModuleNode construction
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit make_polygit_module(
+circuit make_qgit_module(
     name: string, partition: u8, sla: u8, budget: ResourceBudget8D
 ) -> ModuleNode
-    lex polylabs/polygit
+    lex polyqlabs/qgit
     @status production
     @precision D
 {
@@ -87,131 +87,131 @@ circuit make_polygit_module(
 // §1  Module Definitions (13 modules)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polygit_branch_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_branch_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_branch", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_branch", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 6000, hash_ops: 200, bandwidth: 2000,
             storage: 1000, observe_events: 200, proofs: 10, consensus: 5, memory: 4096 })
 }
 
-circuit polygit_ci_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_ci_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_ci", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_ci", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 10000, hash_ops: 300, bandwidth: 5000,
             storage: 2000, observe_events: 500, proofs: 10, consensus: 5, memory: 8192 })
 }
 
-circuit polygit_commit_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_commit_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_commit", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_commit", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 8000, hash_ops: 500, bandwidth: 3000,
             storage: 2000, observe_events: 300, proofs: 20, consensus: 10, memory: 8192 })
 }
 
-circuit polygit_document_review_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_document_review_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_document_review", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_document_review", AperturePartition::Backend as u8,
         SLATier::Standard as u8,
         ResourceBudget8D { execution: 5000, hash_ops: 100, bandwidth: 2000,
             storage: 1000, observe_events: 200, proofs: 5, consensus: 2, memory: 4096 })
 }
 
-circuit polygit_governance_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_governance_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_governance", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_governance", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 8000, hash_ops: 200, bandwidth: 2000,
             storage: 1000, observe_events: 300, proofs: 15, consensus: 10, memory: 4096 })
 }
 
-circuit polygit_issue_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_issue_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_issue", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_issue", AperturePartition::Backend as u8,
         SLATier::Standard as u8,
         ResourceBudget8D { execution: 5000, hash_ops: 100, bandwidth: 2000,
             storage: 1500, observe_events: 200, proofs: 5, consensus: 2, memory: 4096 })
 }
 
-circuit polygit_lfs_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_lfs_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_lfs", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_lfs", AperturePartition::Backend as u8,
         SLATier::Standard as u8,
         ResourceBudget8D { execution: 6000, hash_ops: 300, bandwidth: 10000,
             storage: 5000, observe_events: 100, proofs: 5, consensus: 2, memory: 8192 })
 }
 
-circuit polygit_metering_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_metering_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_metering", AperturePartition::Shared as u8,
+    make_qgit_module("qgit_metering", AperturePartition::Shared as u8,
         SLATier::Standard as u8,
         ResourceBudget8D { execution: 3000, hash_ops: 100, bandwidth: 1000,
             storage: 500, observe_events: 200, proofs: 5, consensus: 2, memory: 2048 })
 }
 
-circuit polygit_platform_health_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_platform_health_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_platform_health", AperturePartition::Shared as u8,
+    make_qgit_module("qgit_platform_health", AperturePartition::Shared as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 3000, hash_ops: 50, bandwidth: 500,
             storage: 300, observe_events: 500, proofs: 5, consensus: 2, memory: 2048 })
 }
 
-circuit polygit_rbac_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_rbac_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_rbac", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_rbac", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 5000, hash_ops: 200, bandwidth: 1000,
             storage: 500, observe_events: 200, proofs: 10, consensus: 5, memory: 4096 })
 }
 
-circuit polygit_repository_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_repository_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_repository", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_repository", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 8000, hash_ops: 300, bandwidth: 3000,
             storage: 3000, observe_events: 300, proofs: 10, consensus: 5, memory: 8192 })
 }
 
-circuit polygit_review_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_review_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_review", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_review", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 7000, hash_ops: 200, bandwidth: 3000,
             storage: 1500, observe_events: 300, proofs: 10, consensus: 5, memory: 4096 })
 }
 
-circuit polygit_repo_graph_module() -> ModuleNode
-    lex polylabs/polygit  @status production  @precision D
+circuit qgit_repo_graph_module() -> ModuleNode
+    lex polyqlabs/qgit  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
 {
-    make_polygit_module("polygit_repo_graph", AperturePartition::Backend as u8,
+    make_qgit_module("qgit_repo_graph", AperturePartition::Backend as u8,
         SLATier::Premium as u8,
         ResourceBudget8D { execution: 10000, hash_ops: 500, bandwidth: 5000,
             storage: 5000, observe_events: 500, proofs: 20, consensus: 10, memory: 16384 })
@@ -221,137 +221,137 @@ circuit polygit_repo_graph_module() -> ModuleNode
 // §2  Graph Registration (13 modules, EDGE_REQUIRES)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polygit_app_graph_register(graph: CsrStorage) -> CsrStorage
-    lex polylabs/polygit
+circuit qgit_app_graph_register(graph: CsrStorage) -> CsrStorage
+    lex polyqlabs/qgit
     @status production
     @precision B
     @attested true
-    observe metrics: [polygit_module_count, polygit_edge_count, register_latency_ns]
+    observe metrics: [qgit_module_count, qgit_edge_count, register_latency_ns]
     meters [compute_cycles, memory_bytes]
 {
-    let (g, id_branch) = module_graph_add_module(graph, polygit_branch_module())
-    let (g, id_ci) = module_graph_add_module(g, polygit_ci_module())
-    let (g, id_commit) = module_graph_add_module(g, polygit_commit_module())
-    let (g, id_doc_review) = module_graph_add_module(g, polygit_document_review_module())
-    let (g, id_governance) = module_graph_add_module(g, polygit_governance_module())
-    let (g, id_issue) = module_graph_add_module(g, polygit_issue_module())
-    let (g, id_lfs) = module_graph_add_module(g, polygit_lfs_module())
-    let (g, id_metering) = module_graph_add_module(g, polygit_metering_module())
-    let (g, id_health) = module_graph_add_module(g, polygit_platform_health_module())
-    let (g, id_rbac) = module_graph_add_module(g, polygit_rbac_module())
-    let (g, id_repository) = module_graph_add_module(g, polygit_repository_module())
-    let (g, id_review) = module_graph_add_module(g, polygit_review_module())
-    let (g, id_repo_graph) = module_graph_add_module(g, polygit_repo_graph_module())
+    let (g, id_branch) = module_graph_add_module(graph, qgit_branch_module())
+    let (g, id_ci) = module_graph_add_module(g, qgit_ci_module())
+    let (g, id_commit) = module_graph_add_module(g, qgit_commit_module())
+    let (g, id_doc_review) = module_graph_add_module(g, qgit_document_review_module())
+    let (g, id_governance) = module_graph_add_module(g, qgit_governance_module())
+    let (g, id_issue) = module_graph_add_module(g, qgit_issue_module())
+    let (g, id_lfs) = module_graph_add_module(g, qgit_lfs_module())
+    let (g, id_metering) = module_graph_add_module(g, qgit_metering_module())
+    let (g, id_health) = module_graph_add_module(g, qgit_platform_health_module())
+    let (g, id_rbac) = module_graph_add_module(g, qgit_rbac_module())
+    let (g, id_repository) = module_graph_add_module(g, qgit_repository_module())
+    let (g, id_review) = module_graph_add_module(g, qgit_review_module())
+    let (g, id_repo_graph) = module_graph_add_module(g, qgit_repo_graph_module())
 
     let ver = "0.2.0"
     let vc = ">=0.2.0"
 
-    // polygit_branch -> polygit_repository
+    // qgit_branch -> qgit_repository
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_branch", source_version: ver,
-        target_module: "polygit_repository", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_branch", source_version: ver,
+        target_module: "qgit_repository", target_version_constraint: vc, metadata: bytes(0),
     }, id_branch, id_repository)
 
-    // polygit_branch -> polygit_commit
+    // qgit_branch -> qgit_commit
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_branch", source_version: ver,
-        target_module: "polygit_commit", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_branch", source_version: ver,
+        target_module: "qgit_commit", target_version_constraint: vc, metadata: bytes(0),
     }, id_branch, id_commit)
 
-    // polygit_ci -> polygit_commit
+    // qgit_ci -> qgit_commit
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_ci", source_version: ver,
-        target_module: "polygit_commit", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_ci", source_version: ver,
+        target_module: "qgit_commit", target_version_constraint: vc, metadata: bytes(0),
     }, id_ci, id_commit)
 
-    // polygit_ci -> polygit_branch
+    // qgit_ci -> qgit_branch
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_ci", source_version: ver,
-        target_module: "polygit_branch", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_ci", source_version: ver,
+        target_module: "qgit_branch", target_version_constraint: vc, metadata: bytes(0),
     }, id_ci, id_branch)
 
-    // polygit_commit -> polygit_repository
+    // qgit_commit -> qgit_repository
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_commit", source_version: ver,
-        target_module: "polygit_repository", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_commit", source_version: ver,
+        target_module: "qgit_repository", target_version_constraint: vc, metadata: bytes(0),
     }, id_commit, id_repository)
 
-    // polygit_document_review -> polygit_review
+    // qgit_document_review -> qgit_review
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_document_review", source_version: ver,
-        target_module: "polygit_review", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_document_review", source_version: ver,
+        target_module: "qgit_review", target_version_constraint: vc, metadata: bytes(0),
     }, id_doc_review, id_review)
 
-    // polygit_governance -> polygit_rbac
+    // qgit_governance -> qgit_rbac
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_governance", source_version: ver,
-        target_module: "polygit_rbac", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_governance", source_version: ver,
+        target_module: "qgit_rbac", target_version_constraint: vc, metadata: bytes(0),
     }, id_governance, id_rbac)
 
-    // polygit_governance -> polygit_branch
+    // qgit_governance -> qgit_branch
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_governance", source_version: ver,
-        target_module: "polygit_branch", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_governance", source_version: ver,
+        target_module: "qgit_branch", target_version_constraint: vc, metadata: bytes(0),
     }, id_governance, id_branch)
 
-    // polygit_issue -> polygit_repository
+    // qgit_issue -> qgit_repository
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_issue", source_version: ver,
-        target_module: "polygit_repository", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_issue", source_version: ver,
+        target_module: "qgit_repository", target_version_constraint: vc, metadata: bytes(0),
     }, id_issue, id_repository)
 
-    // polygit_lfs -> polygit_repository
+    // qgit_lfs -> qgit_repository
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_lfs", source_version: ver,
-        target_module: "polygit_repository", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_lfs", source_version: ver,
+        target_module: "qgit_repository", target_version_constraint: vc, metadata: bytes(0),
     }, id_lfs, id_repository)
 
-    // polygit_lfs -> polygit_commit
+    // qgit_lfs -> qgit_commit
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_lfs", source_version: ver,
-        target_module: "polygit_commit", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_lfs", source_version: ver,
+        target_module: "qgit_commit", target_version_constraint: vc, metadata: bytes(0),
     }, id_lfs, id_commit)
 
-    // polygit_review -> polygit_commit
+    // qgit_review -> qgit_commit
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_review", source_version: ver,
-        target_module: "polygit_commit", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_review", source_version: ver,
+        target_module: "qgit_commit", target_version_constraint: vc, metadata: bytes(0),
     }, id_review, id_commit)
 
-    // polygit_review -> polygit_branch
+    // qgit_review -> qgit_branch
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_review", source_version: ver,
-        target_module: "polygit_branch", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_review", source_version: ver,
+        target_module: "qgit_branch", target_version_constraint: vc, metadata: bytes(0),
     }, id_review, id_branch)
 
-    // polygit_review -> polygit_rbac
+    // qgit_review -> qgit_rbac
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_review", source_version: ver,
-        target_module: "polygit_rbac", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_review", source_version: ver,
+        target_module: "qgit_rbac", target_version_constraint: vc, metadata: bytes(0),
     }, id_review, id_rbac)
 
-    // polygit_repo_graph -> polygit_repository
+    // qgit_repo_graph -> qgit_repository
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_repo_graph", source_version: ver,
-        target_module: "polygit_repository", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_repo_graph", source_version: ver,
+        target_module: "qgit_repository", target_version_constraint: vc, metadata: bytes(0),
     }, id_repo_graph, id_repository)
 
-    // polygit_repo_graph -> polygit_commit
+    // qgit_repo_graph -> qgit_commit
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_repo_graph", source_version: ver,
-        target_module: "polygit_commit", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_repo_graph", source_version: ver,
+        target_module: "qgit_commit", target_version_constraint: vc, metadata: bytes(0),
     }, id_repo_graph, id_commit)
 
-    // polygit_metering -> polygit_repository
+    // qgit_metering -> qgit_repository
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_metering", source_version: ver,
-        target_module: "polygit_repository", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_metering", source_version: ver,
+        target_module: "qgit_repository", target_version_constraint: vc, metadata: bytes(0),
     }, id_metering, id_repository)
 
-    // polygit_platform_health -> polygit_metering
+    // qgit_platform_health -> qgit_metering
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polygit_platform_health", source_version: ver,
-        target_module: "polygit_metering", target_version_constraint: vc, metadata: bytes(0),
+        edge_type: EDGE_REQUIRES, source_module: "qgit_platform_health", source_version: ver,
+        target_module: "qgit_metering", target_version_constraint: vc, metadata: bytes(0),
     }, id_health, id_metering)
 
     g
@@ -361,42 +361,42 @@ circuit polygit_app_graph_register(graph: CsrStorage) -> CsrStorage
 // §3  Cross-Graph Bridge Edges
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Bridge edges: PolyGit -> es-vcs (commit wire protocol), PolyKit CI (pipeline
+/// Bridge edges: PolyGit -> es-vcs (commit wire protocol), QKit CI (pipeline
 /// dispatch), PolyDocs (document review integration).
-circuit polygit_register_bridge_edges(graph: CsrStorage) -> CsrStorage
-    lex polylabs/polygit
+circuit qgit_register_bridge_edges(graph: CsrStorage) -> CsrStorage
+    lex polyqlabs/qgit
     @status production
     @precision B
     @attested true
     observe metrics: [bridge_edge_count]
     meters [compute_cycles]
 {
-    let id_commit = find_polygit_module_id(graph, "polygit_commit")
-    let id_ci = find_polygit_module_id(graph, "polygit_ci")
-    let id_doc_review = find_polygit_module_id(graph, "polygit_document_review")
+    let id_commit = find_qgit_module_id(graph, "qgit_commit")
+    let id_ci = find_qgit_module_id(graph, "qgit_ci")
+    let id_doc_review = find_qgit_module_id(graph, "qgit_document_review")
 
-    // BRIDGE_TO: polygit_commit -> es-vcs es_vcs_core (commit wire protocol)
+    // BRIDGE_TO: qgit_commit -> es-vcs es_vcs_core (commit wire protocol)
     let bridge_vcs = serialize(BridgeEdgeData {
-        source_lex: POLYGIT_APP_LEX, source_module: "polygit_commit",
+        source_lex: POLYGIT_APP_LEX, source_module: "qgit_commit",
         target_lex: "core/vcs", target_module: "es_vcs_core",
         bridge_type: "commit_wire_protocol", timestamp_ms: 0,
     }) as bytes
     let (g, bid1) = graph_add_node(graph, 0xB0, bridge_vcs)
     let g = graph_add_edge(g, id_commit, bid1, EDGE_BRIDGE_TO, bridge_vcs)
 
-    // BRIDGE_TO: polygit_ci -> PolyKit CI polykit_ci_runner (pipeline dispatch)
+    // BRIDGE_TO: qgit_ci -> QKit CI qkit_ci_runner (pipeline dispatch)
     let bridge_ci = serialize(BridgeEdgeData {
-        source_lex: POLYGIT_APP_LEX, source_module: "polygit_ci",
-        target_lex: "polylabs/polykit/ci", target_module: "polykit_ci_runner",
+        source_lex: POLYGIT_APP_LEX, source_module: "qgit_ci",
+        target_lex: "polyqlabs/qkit/ci", target_module: "qkit_ci_runner",
         bridge_type: "pipeline_dispatch", timestamp_ms: 0,
     }) as bytes
     let (g, bid2) = graph_add_node(g, 0xB0, bridge_ci)
     let g = graph_add_edge(g, id_ci, bid2, EDGE_BRIDGE_TO, bridge_ci)
 
-    // BRIDGE_TO: polygit_document_review -> PolyDocs polydocs_review (doc review)
+    // BRIDGE_TO: qgit_document_review -> PolyDocs qdocs_review (doc review)
     let bridge_docs = serialize(BridgeEdgeData {
-        source_lex: POLYGIT_APP_LEX, source_module: "polygit_document_review",
-        target_lex: "polylabs/polydocs", target_module: "polydocs_review",
+        source_lex: POLYGIT_APP_LEX, source_module: "qgit_document_review",
+        target_lex: "polyqlabs/qdocs", target_module: "qdocs_review",
         bridge_type: "document_review", timestamp_ms: 0,
     }) as bytes
     let (g, bid3) = graph_add_node(g, 0xB0, bridge_docs)
@@ -410,11 +410,11 @@ circuit polygit_register_bridge_edges(graph: CsrStorage) -> CsrStorage
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Register GOVERNANCE_OBSERVE edges for all 13 PolyGit modules.
-circuit polygit_register_governance_edges(
+circuit qgit_register_governance_edges(
     graph: CsrStorage,
     governance_lex: string
 ) -> CsrStorage
-    lex polylabs/polygit
+    lex polyqlabs/qgit
     @status production
     @precision B
     @attested true
@@ -422,16 +422,16 @@ circuit polygit_register_governance_edges(
     meters [compute_cycles]
 {
     let modules = [
-        "polygit_branch", "polygit_ci", "polygit_commit",
-        "polygit_document_review", "polygit_governance", "polygit_issue",
-        "polygit_lfs", "polygit_metering", "polygit_platform_health",
-        "polygit_rbac", "polygit_repository", "polygit_review",
-        "polygit_repo_graph",
+        "qgit_branch", "qgit_ci", "qgit_commit",
+        "qgit_document_review", "qgit_governance", "qgit_issue",
+        "qgit_lfs", "qgit_metering", "qgit_platform_health",
+        "qgit_rbac", "qgit_repository", "qgit_review",
+        "qgit_repo_graph",
     ]
 
     let g = graph
     for name in modules {
-        let module_id = find_polygit_module_id(g, name)
+        let module_id = find_qgit_module_id(g, name)
         g = module_graph_add_governance_observe_edge(g, GovernanceObserveEdge {
             observer_lex: governance_lex, observer_module: "governance_core",
             observed_lex: POLYGIT_APP_LEX, observed_module: name,
@@ -446,7 +446,7 @@ circuit polygit_register_governance_edges(
 // Internal helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-data BridgeEdgeData : polylabs/polygit/bridge v1 {
+data BridgeEdgeData : polyqlabs/qgit/bridge v1 {
     source_lex: string,
     source_module: string,
     target_lex: string,
@@ -455,8 +455,8 @@ data BridgeEdgeData : polylabs/polygit/bridge v1 {
     timestamp_ms: u64,
 }
 
-circuit find_polygit_module_id(graph: CsrStorage, name: string) -> u32
-    lex polylabs/polygit
+circuit find_qgit_module_id(graph: CsrStorage, name: string) -> u32
+    lex polyqlabs/qgit
     @status production
     @precision D
 {
@@ -472,8 +472,8 @@ circuit find_polygit_module_id(graph: CsrStorage, name: string) -> u32
 
 // ── Metrics Store ──────────────────────────────────────────────────────────────
 
-store series polygit_app_graph_metrics
-    lex polylabs/polygit/metrics
+store series qgit_app_graph_metrics
+    lex polyqlabs/qgit/metrics
 {
     operation: string key
     module_count: u32
@@ -486,45 +486,45 @@ store series polygit_app_graph_metrics
 // ── Golden Tests ───────────────────────────────────────────────────────────────
 
 #[test]
-circuit test_polygit_app_graph_register()
-    lex polylabs/polygit  @status test
+circuit test_qgit_app_graph_register()
+    lex polyqlabs/qgit  @status test
 {
     let graph = CsrStorage::empty()
-    let result = polygit_app_graph_register(graph)
+    let result = qgit_app_graph_register(graph)
     assert result.num_nodes == POLYGIT_MODULE_COUNT
     assert result.num_edges >= 18
 }
 
 #[test]
-circuit test_polygit_bridge_edges()
-    lex polylabs/polygit  @status test
+circuit test_qgit_bridge_edges()
+    lex polyqlabs/qgit  @status test
 {
     let graph = CsrStorage::empty()
-    let graph = polygit_app_graph_register(graph)
-    let result = polygit_register_bridge_edges(graph)
+    let graph = qgit_app_graph_register(graph)
+    let result = qgit_register_bridge_edges(graph)
     let bridge_count = count_edges_of_type(result, EDGE_BRIDGE_TO)
     assert bridge_count == 3
 }
 
 #[test]
-circuit test_polygit_governance_edges()
-    lex polylabs/polygit  @status test
+circuit test_qgit_governance_edges()
+    lex polyqlabs/qgit  @status test
 {
     let graph = CsrStorage::empty()
-    let graph = polygit_app_graph_register(graph)
-    let result = polygit_register_governance_edges(graph, "core/governance")
+    let graph = qgit_app_graph_register(graph)
+    let result = qgit_register_governance_edges(graph, "core/governance")
     let gov_count = count_edges_of_type(result, EDGE_GOVERNANCE_OBSERVE)
     assert gov_count == POLYGIT_MODULE_COUNT
 }
 
 #[test]
-circuit test_polygit_module_lookup()
-    lex polylabs/polygit  @status test
+circuit test_qgit_module_lookup()
+    lex polyqlabs/qgit  @status test
 {
     let graph = CsrStorage::empty()
-    let graph = polygit_app_graph_register(graph)
-    let id = find_polygit_module_id(graph, "polygit_commit")
+    let graph = qgit_app_graph_register(graph)
+    let id = find_qgit_module_id(graph, "qgit_commit")
     assert id != 0xFFFFFFFF
-    let missing = find_polygit_module_id(graph, "nonexistent")
+    let missing = find_qgit_module_id(graph, "nonexistent")
     assert missing == 0xFFFFFFFF
 }

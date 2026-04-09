@@ -1,5 +1,5 @@
 /// graph.fl — VCS repository graph (invest pattern)
-/// lex polylabs/poly-git/graph
+/// lex polyqlabs/poly-git/graph
 ///
 /// Graph overlays, inline series, ai_feed directives, CSR storage.
 /// Pattern: toddrooke/invest/circuits/graphs/portfolio.fl

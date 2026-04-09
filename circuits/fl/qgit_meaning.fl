@@ -2,15 +2,15 @@
 /// PolyGit CE Meaning Domains — registers 3 meaning domains, noise filter,
 /// and 2 SME panels for cognitive engine integration.
 ///
-/// Epic: polygit#TBD (CE + App Graph Integration)
-/// govern lex polylabs/polygit/cognitive
+/// Epic: qgit#TBD (CE + App Graph Integration)
+/// govern lex polyqlabs/qgit/cognitive
 
-lex polylabs/polygit/cognitive
+lex polyqlabs/qgit/cognitive
 
 @target software
 @codegen_targets ["wasm", "rust"]
 
-import "polylabs/polykit/cognitive.fl" {
+import "polyqlabs/qkit/cognitive.fl" {
     MeaningDomain, MeaningDomainConfig, NoiseFilterConfig, NoiseRule,
     SmePanelConfig, SmePanelTrigger,
     register_meaning_domain, register_noise_filter, register_sme_panel,
@@ -18,7 +18,7 @@ import "polylabs/polykit/cognitive.fl" {
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const POLYGIT_CE_LEX: string = "polylabs/polygit/cognitive"
+const POLYGIT_CE_LEX: string = "polyqlabs/qgit/cognitive"
 const DOMAIN_COUNT: u32 = 3
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -28,7 +28,7 @@ const DOMAIN_COUNT: u32 = 3
 /// Commit frequency distributions, branch lifecycle analysis, merge conflict
 /// hotspot identification, committer cadence anomalies.
 circuit vcs_commit_patterns_domain() -> MeaningDomainConfig
-    lex polylabs/polygit/cognitive
+    lex polyqlabs/qgit/cognitive
     @status production
     @precision C
 {
@@ -38,10 +38,10 @@ circuit vcs_commit_patterns_domain() -> MeaningDomainConfig
         crystallization_threshold: 50,
         impact_weight: 0.3,
         event_sources: [
-            "polygit_commit.commit_created",
-            "polygit_branch.branch_created",
-            "polygit_branch.branch_merged",
-            "polygit_branch.branch_deleted",
+            "qgit_commit.commit_created",
+            "qgit_branch.branch_created",
+            "qgit_branch.branch_merged",
+            "qgit_branch.branch_deleted",
         ],
         retention_days: 90,
         aggregation_window_hours: 24,
@@ -51,7 +51,7 @@ circuit vcs_commit_patterns_domain() -> MeaningDomainConfig
 /// Code review velocity, CI pass rate trends, test coverage delta, review depth
 /// scoring, automated vs human review ratio.
 circuit vcs_code_quality_domain() -> MeaningDomainConfig
-    lex polylabs/polygit/cognitive
+    lex polyqlabs/qgit/cognitive
     @status production
     @precision C
 {
@@ -61,11 +61,11 @@ circuit vcs_code_quality_domain() -> MeaningDomainConfig
         crystallization_threshold: 30,
         impact_weight: 0.4,
         event_sources: [
-            "polygit_review.review_submitted",
-            "polygit_review.review_approved",
-            "polygit_review.review_rejected",
-            "polygit_ci.pipeline_completed",
-            "polygit_ci.test_results_reported",
+            "qgit_review.review_submitted",
+            "qgit_review.review_approved",
+            "qgit_review.review_rejected",
+            "qgit_ci.pipeline_completed",
+            "qgit_ci.test_results_reported",
         ],
         retention_days: 90,
         aggregation_window_hours: 24,
@@ -75,7 +75,7 @@ circuit vcs_code_quality_domain() -> MeaningDomainConfig
 /// Approval pattern compliance, policy exception frequency, branch protection
 /// adherence, CODEOWNERS coverage gaps, governance escalation patterns.
 circuit vcs_governance_domain() -> MeaningDomainConfig
-    lex polylabs/polygit/cognitive
+    lex polyqlabs/qgit/cognitive
     @status production
     @precision C
 {
@@ -85,11 +85,11 @@ circuit vcs_governance_domain() -> MeaningDomainConfig
         crystallization_threshold: 20,
         impact_weight: 0.3,
         event_sources: [
-            "polygit_governance.policy_evaluated",
-            "polygit_governance.policy_exception",
-            "polygit_governance.approval_completed",
-            "polygit_rbac.permission_checked",
-            "polygit_branch.protection_override",
+            "qgit_governance.policy_evaluated",
+            "qgit_governance.policy_exception",
+            "qgit_governance.approval_completed",
+            "qgit_rbac.permission_checked",
+            "qgit_branch.protection_override",
         ],
         retention_days: 180,
         aggregation_window_hours: 24,
@@ -100,13 +100,13 @@ circuit vcs_governance_domain() -> MeaningDomainConfig
 // §2  Noise Filter Configuration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polygit_noise_filter() -> NoiseFilterConfig
-    lex polylabs/polygit/cognitive
+circuit qgit_noise_filter() -> NoiseFilterConfig
+    lex polyqlabs/qgit/cognitive
     @status production
     @precision C
 {
     NoiseFilterConfig {
-        name: "polygit_vcs_noise_filter",
+        name: "qgit_vcs_noise_filter",
         lex_namespace: POLYGIT_CE_LEX,
         suppress_rules: [
             NoiseRule { pattern: "committer.is_bot == true", reason: "bot_commits" },
@@ -129,7 +129,7 @@ circuit polygit_noise_filter() -> NoiseFilterConfig
 // ═══════════════════════════════════════════════════════════════════════════════
 
 circuit code_review_quality_panel() -> SmePanelConfig
-    lex polylabs/polygit/cognitive
+    lex polyqlabs/qgit/cognitive
     @status production
     @precision C
 {
@@ -153,7 +153,7 @@ circuit code_review_quality_panel() -> SmePanelConfig
 }
 
 circuit ci_pipeline_optimization_panel() -> SmePanelConfig
-    lex polylabs/polygit/cognitive
+    lex polyqlabs/qgit/cognitive
     @status production
     @precision C
 {
@@ -182,8 +182,8 @@ circuit ci_pipeline_optimization_panel() -> SmePanelConfig
 // §4  Orchestrator — register all CE components
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polygit_register_ce(product_lex: string) -> bool
-    lex polylabs/polygit/cognitive
+circuit qgit_register_ce(product_lex: string) -> bool
+    lex polyqlabs/qgit/cognitive
     @status production
     @precision B
     @attested true
@@ -194,7 +194,7 @@ circuit polygit_register_ce(product_lex: string) -> bool
     let ok2 = register_meaning_domain(product_lex, vcs_code_quality_domain())
     let ok3 = register_meaning_domain(product_lex, vcs_governance_domain())
 
-    let ok4 = register_noise_filter(product_lex, polygit_noise_filter())
+    let ok4 = register_noise_filter(product_lex, qgit_noise_filter())
 
     let ok5 = register_sme_panel(product_lex, code_review_quality_panel())
     let ok6 = register_sme_panel(product_lex, ci_pipeline_optimization_panel())
@@ -206,7 +206,7 @@ circuit polygit_register_ce(product_lex: string) -> bool
 
 #[test]
 circuit test_meaning_domains_valid()
-    lex polylabs/polygit/cognitive  @status test
+    lex polyqlabs/qgit/cognitive  @status test
 {
     let d1 = vcs_commit_patterns_domain()
     let d2 = vcs_code_quality_domain()
@@ -220,16 +220,16 @@ circuit test_meaning_domains_valid()
 
 #[test]
 circuit test_noise_filter_rules()
-    lex polylabs/polygit/cognitive  @status test
+    lex polyqlabs/qgit/cognitive  @status test
 {
-    let nf = polygit_noise_filter()
+    let nf = qgit_noise_filter()
     assert len(nf.suppress_rules) == 5
     assert len(nf.amplify_rules) == 4
 }
 
 #[test]
 circuit test_sme_panels_configured()
-    lex polylabs/polygit/cognitive  @status test
+    lex polyqlabs/qgit/cognitive  @status test
 {
     let p1 = code_review_quality_panel()
     let p2 = ci_pipeline_optimization_panel()
@@ -241,8 +241,8 @@ circuit test_sme_panels_configured()
 
 #[test]
 circuit test_register_ce_orchestrator()
-    lex polylabs/polygit/cognitive  @status test
+    lex polyqlabs/qgit/cognitive  @status test
 {
-    let result = polygit_register_ce("polylabs/polygit")
+    let result = qgit_register_ce("polyqlabs/qgit")
     assert result == true
 }

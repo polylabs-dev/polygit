@@ -1,21 +1,21 @@
 /// widgets.fl — VCS console admin widgets
-/// lex polylabs/poly-git/console
+/// lex polyqlabs/poly-git/console
 ///
-/// Import polykit-console for event bus, RBAC, widget processing.
+/// Import qkit-console for event bus, RBAC, widget processing.
 
-import polykit_console from "polykit-console@^0.2.0"
+import qkit_console from "qkit-console@^0.2.0"
 
 circuit push_activity_widget(
     repo_id: bytes(32),
     time_range_ms: u64
-) -> polykit_console::WidgetPayload
-    lex polylabs/poly-git/console
+) -> qkit_console::WidgetPayload
+    lex polyqlabs/poly-git/console
     precision C
     observe metrics: [push_activity_renders]
 {
     let pushes = series_query(push_history, repo_id, time_range_ms)
     let data = format_json("push_activity", pushes)
-    polykit_console::WidgetPayload {
+    qkit_console::WidgetPayload {
         widget_id: "poly-git-push-activity",
         widget_type: "time_series",
         data_json: data,
@@ -26,14 +26,14 @@ circuit push_activity_widget(
 
 circuit health_dashboard_widget(
     repo_id: bytes(32)
-) -> polykit_console::WidgetPayload
-    lex polylabs/poly-git/console
+) -> qkit_console::WidgetPayload
+    lex polyqlabs/poly-git/console
     precision C
     observe metrics: [health_dashboard_renders]
 {
     let health = graph_overlay(vcs_repo_graph, repo_id, "health")
     let data = format_json("health", health)
-    polykit_console::WidgetPayload {
+    qkit_console::WidgetPayload {
         widget_id: "poly-git-health",
         widget_type: "status_panel",
         data_json: data,
@@ -44,14 +44,14 @@ circuit health_dashboard_widget(
 
 circuit acl_management_widget(
     repo_id: bytes(32)
-) -> polykit_console::WidgetPayload
-    lex polylabs/poly-git/console
+) -> qkit_console::WidgetPayload
+    lex polyqlabs/poly-git/console
     precision C
     observe metrics: [acl_widget_renders]
 {
     let acls = graph_query(vcs_repo_graph, "acls_for", repo_id)
     let data = format_json("acl_management", acls)
-    polykit_console::WidgetPayload {
+    qkit_console::WidgetPayload {
         widget_id: "poly-git-acl-management",
         widget_type: "table",
         data_json: data,
@@ -63,14 +63,14 @@ circuit acl_management_widget(
 circuit governance_audit_widget(
     repo_id: bytes(32),
     time_range_ms: u64
-) -> polykit_console::WidgetPayload
-    lex polylabs/poly-git/console
+) -> qkit_console::WidgetPayload
+    lex polyqlabs/poly-git/console
     precision C
     observe metrics: [governance_audit_renders]
 {
     let actions = series_query(governance_history, repo_id, time_range_ms)
     let data = format_json("governance_audit", actions)
-    polykit_console::WidgetPayload {
+    qkit_console::WidgetPayload {
         widget_id: "poly-git-governance-audit",
         widget_type: "event_log",
         data_json: data,
@@ -85,13 +85,13 @@ circuit render_widget_if_authorized(
     user_roles: list<bytes(32)>,
     repo_id: bytes(32),
     time_range_ms: u64
-) -> polykit_console::WidgetPayload
-    lex polylabs/poly-git/console
+) -> qkit_console::WidgetPayload
+    lex polyqlabs/poly-git/console
     precision A
     @guard(block_on: widget_unauthorized)
 {
     let required = graph_query(vcs_rbac, "roles_for_widget", widget_id)
-    let allowed = polykit_console::check_access(user_roles, required)
+    let allowed = qkit_console::check_access(user_roles, required)
 
     if allowed {
         match widget_id {
@@ -99,7 +99,7 @@ circuit render_widget_if_authorized(
             "poly-git-health" => health_dashboard_widget(repo_id),
             "poly-git-acl-management" => acl_management_widget(repo_id),
             "poly-git-governance-audit" => governance_audit_widget(repo_id, time_range_ms),
-            _ => polykit_console::WidgetPayload {
+            _ => qkit_console::WidgetPayload {
                 widget_id: widget_id,
                 widget_type: "error",
                 data_json: "unknown widget",
@@ -108,7 +108,7 @@ circuit render_widget_if_authorized(
             },
         }
     } else {
-        polykit_console::WidgetPayload {
+        qkit_console::WidgetPayload {
             widget_id: widget_id,
             widget_type: "unauthorized",
             data_json: "",

@@ -1,8 +1,8 @@
-// Poly Git Metering — Git operation resource metering (v0.11.0)
+// Q Git Metering — Git operation resource metering (v0.11.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git/metering
-//   Maps git operations to PolyKit 8-dimension metering.
+//   esn/global/org/polyqlabs/git/metering
+//   Maps git operations to QKit 8-dimension metering.
 //
 // es-git Wire VCS opcodes mapped:
 //   0xA1 OBJECT_PUSH → meter_push
@@ -15,7 +15,7 @@
 //   commit → [O: objects_created, E: signing_execution]
 //   review → [E: ai_inference, C: review_circuit_ops]
 
-import polykit_metering
+import qkit_metering
 
 type GitOperation = enum {
     Push,
@@ -31,7 +31,7 @@ data PushMetrics : git v1 {
     scatter_chunks: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/metering
+    govern lex esn/global/org/polyqlabs/git/metering
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -43,7 +43,7 @@ data PullMetrics : git v1 {
     cache_hits: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/metering
+    govern lex esn/global/org/polyqlabs/git/metering
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -55,7 +55,7 @@ data CommitMetrics : git v1 {
     signature_bytes: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/metering
+    govern lex esn/global/org/polyqlabs/git/metering
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -67,7 +67,7 @@ data ReviewMetrics : git v1 {
     approvals_processed: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/metering
+    govern lex esn/global/org/polyqlabs/git/metering
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -83,7 +83,7 @@ data RepoQuota : git v1 {
     current_objects: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/metering
+    govern lex esn/global/org/polyqlabs/git/metering
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -95,7 +95,7 @@ stream git_metering_events: event<MeteringRecord>
 // --- Meter a push operation (Wire opcode 0xA1 OBJECT_PUSH) ---
 circuit meter_push(user_id: bytes(16), repo_id: bytes(32), metrics: PushMetrics) -> MeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/metering
+    lex esn/global/org/polyqlabs/git/metering
     precision C
     observe metrics: [push_meters, bandwidth_metered, storage_metered]
     monitor "push_metering" { push_meters > 0 }
@@ -121,7 +121,7 @@ circuit meter_push(user_id: bytes(16), repo_id: bytes(32), metrics: PushMetrics)
 // --- Meter a pull operation (Wire opcode 0xA2 OBJECT_PULL) ---
 circuit meter_pull(user_id: bytes(16), repo_id: bytes(32), metrics: PullMetrics) -> MeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/metering
+    lex esn/global/org/polyqlabs/git/metering
     precision C
     observe metrics: [pull_meters, bandwidth_metered, cache_hit_ratio]
     monitor "pull_metering" { pull_meters > 0 }
@@ -146,7 +146,7 @@ circuit meter_pull(user_id: bytes(16), repo_id: bytes(32), metrics: PullMetrics)
 // --- Meter a review operation (Wire opcode 0xAA / 0xAB) ---
 circuit meter_review(user_id: bytes(16), repo_id: bytes(32), metrics: ReviewMetrics) -> MeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/metering
+    lex esn/global/org/polyqlabs/git/metering
     precision C
     observe metrics: [review_meters, ai_inference_metered]
     monitor "review_metering" { review_meters > 0 }
@@ -172,7 +172,7 @@ circuit meter_review(user_id: bytes(16), repo_id: bytes(32), metrics: ReviewMetr
 @guard(block_on: storage_quota_exceeded)
 circuit check_repo_quota(repo_id: bytes(32), operation: GitOperation, estimated_bytes: u64) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/metering
+    lex esn/global/org/polyqlabs/git/metering
     precision C
     observe metrics: [quota_checks, quota_exceeded, quota_remaining_pct]
     monitor "quota_violations" { quota_exceeded < 10 per 3600s }
@@ -200,7 +200,7 @@ circuit check_repo_quota(repo_id: bytes(32), operation: GitOperation, estimated_
 // --- Get accumulated usage for a repository ---
 circuit get_usage(user_id: bytes(16), repo_id: bytes(32)) -> DimensionValues
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/metering
+    lex esn/global/org/polyqlabs/git/metering
     precision B
     observe metrics: [usage_queries]
     monitor "usage_query_volume" { usage_queries < 500 per 60s }

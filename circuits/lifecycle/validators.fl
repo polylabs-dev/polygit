@@ -1,5 +1,5 @@
 /// validators.fl — Trigger circuits for push lifecycle guards
-/// lex polylabs/poly-git/lifecycle
+/// lex polyqlabs/poly-git/lifecycle
 ///
 /// Separate trigger circuits (invest pattern) for each guard condition.
 
@@ -7,7 +7,7 @@
 circuit check_objects_valid(
     manifest: PushManifest
 ) -> bool
-    lex polylabs/poly-git/lifecycle
+    lex polyqlabs/poly-git/lifecycle
     precision A
     observe metrics: [object_validations, invalid_objects]
     test golden {
@@ -30,7 +30,7 @@ circuit check_objects_valid(
 circuit check_ref_conflict(
     manifest: PushManifest
 ) -> bool
-    lex polylabs/poly-git/lifecycle
+    lex polyqlabs/poly-git/lifecycle
     precision A
     observe metrics: [ref_conflict_checks, conflicts_detected]
 {
@@ -48,7 +48,7 @@ circuit check_ref_conflict(
 circuit check_branch_protection(
     manifest: PushManifest
 ) -> bool
-    lex polylabs/poly-git/lifecycle
+    lex polyqlabs/poly-git/lifecycle
     precision A
     @guard(block_on: policy_violated)
     observe metrics: [branch_protection_checks, protection_violations]
@@ -78,7 +78,7 @@ circuit check_branch_protection(
 circuit check_push_size_limits(
     manifest: PushManifest
 ) -> bool
-    lex polylabs/poly-git/lifecycle
+    lex polyqlabs/poly-git/lifecycle
     precision A
     observe metrics: [size_limit_checks, oversized_pushes]
 {
@@ -106,7 +106,7 @@ circuit signature_valid(
     commit: VcsCommit,
     signing_key: bytes(2592)
 ) -> bool
-    lex polylabs/poly-git/lifecycle
+    lex polyqlabs/poly-git/lifecycle
     precision A
     observe metrics: [signature_verifications, signature_failures]
 {
@@ -119,7 +119,7 @@ circuit check_read_access(
     puller_id: bytes(16),
     repo_id: bytes(32)
 ) -> bool
-    lex polylabs/poly-git/lifecycle
+    lex polyqlabs/poly-git/lifecycle
     precision A
     observe metrics: [access_checks, access_denials]
 {

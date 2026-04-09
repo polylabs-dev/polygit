@@ -1,10 +1,10 @@
-// Poly Git Governance — Enterprise governance composing eStream rbac.fl and group_hierarchy.fl (v0.11.0)
+// Q Git Governance — Enterprise governance composing eStream rbac.fl and group_hierarchy.fl (v0.11.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git
+//   esn/global/org/polyqlabs/git
 //   Hierarchical governance: org → group → repo with policy inheritance.
 //   Composes upstream eStream circuits (rbac, group_hierarchy, issue_tracking) into
-//   Poly Git-specific access control and branch protection.
+//   Q Git-specific access control and branch protection.
 //
 // es-git Wire VCS opcodes:
 //   0xA3 REF_UPDATE — branch ref updates gated by governance
@@ -14,9 +14,9 @@
 //   OrgPolicy → GroupPolicy → RepoPolicyOverride
 //   Lower-level overrides can tighten but never relax parent constraints.
 
-import polykit_identity
-import polykit_governance
-import polygit_repository
+import qkit_identity
+import qkit_governance
+import qgit_repository
 
 // Upstream eStream governance primitives
 import estream.circuits.core.data.graphs.rbac
@@ -34,7 +34,7 @@ data OrgPolicy : git v1 {
     audit_retention_days: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         redact [org_id]
         infer on_write
@@ -51,7 +51,7 @@ data GroupPolicy : git v1 {
     allowed_contributors: list<bytes(32)>,
 }
     store kv
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         redact [allowed_contributors]
         infer on_write
@@ -67,7 +67,7 @@ data RepoPolicyOverride : git v1 {
     codeowners: list<CodeOwnerRule>,
 }
     store kv
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -82,7 +82,7 @@ data BranchProtection : git v1 {
     require_linear_history: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         redact [restrict_push]
         infer on_write
@@ -95,7 +95,7 @@ data CodeOwnerRule : git v1 {
     min_owner_approvals: u8,
 }
     store kv
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         redact [owners]
         infer on_write
@@ -109,7 +109,7 @@ data AccessCheckResult : git v1 {
     denied_reason: string,
 }
     store kv
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -125,7 +125,7 @@ data AuditEntry : git v1 {
     timestamp_ns: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         redact [principal]
         infer on_write
@@ -142,7 +142,7 @@ circuit check_repo_access(
     permission_bit: u64
 ) -> AccessCheckResult
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git {
+    lex esn/global/org/polyqlabs/git {
         governance hierarchical
         audit_trail true
     }
@@ -193,7 +193,7 @@ circuit check_repo_access(
 // --- Apply org-level policy to a group ---
 circuit apply_org_policy(org_id: bytes(32), group_id: bytes(32)) -> GroupPolicy
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git {
+    lex esn/global/org/polyqlabs/git {
         governance hierarchical
     }
     precision C
@@ -228,7 +228,7 @@ circuit enforce_branch_protection(
     commit_id: ObjectId
 ) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git {
+    lex esn/global/org/polyqlabs/git {
         governance hierarchical
         audit_trail true
     }
@@ -269,7 +269,7 @@ circuit enforce_branch_protection(
 // --- Audit access history for a principal ---
 circuit audit_access(principal: bytes(32), since_ns: u64) -> list<AuditEntry>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git {
+    lex esn/global/org/polyqlabs/git {
         audit_trail true
     }
     precision B

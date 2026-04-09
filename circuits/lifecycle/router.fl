@@ -1,5 +1,5 @@
 /// router.fl — Push/pull lifecycle FSMs with all 7 safety features
-/// lex polylabs/poly-git/lifecycle
+/// lex polyqlabs/poly-git/lifecycle
 ///
 /// Pattern: toddrooke/invest/circuits/lifecycle/position_fsm.fl
 

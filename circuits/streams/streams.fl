@@ -1,8 +1,8 @@
 /// streams.fl — VCS event streams
-/// lex polylabs/poly-git/streams
+/// lex polyqlabs/poly-git/streams
 
 stream push_events {
-    topic "lex://estream/apps/polylabs.git/push"
+    topic "lex://estream/apps/polyqlabs.git/push"
     retention 365d
     consumers [console, audit, streamsight, corpus]
 
@@ -39,7 +39,7 @@ stream push_events {
 }
 
 stream pull_events {
-    topic "lex://estream/apps/polylabs.git/pull"
+    topic "lex://estream/apps/polyqlabs.git/pull"
     retention 365d
     consumers [console, audit, streamsight]
 
@@ -61,7 +61,7 @@ stream pull_events {
 }
 
 stream ref_events {
-    topic "lex://estream/apps/polylabs.git/refs"
+    topic "lex://estream/apps/polyqlabs.git/refs"
     retention 365d
     consumers [console, audit]
 
@@ -89,7 +89,7 @@ stream ref_events {
 }
 
 stream governance_events {
-    topic "lex://estream/apps/polylabs.git/governance"
+    topic "lex://estream/apps/polyqlabs.git/governance"
     retention permanent
     consumers [console, audit, compliance, cortex]
 
@@ -119,7 +119,7 @@ stream governance_events {
 }
 
 stream safety_events {
-    topic "lex://estream/apps/polylabs.git/safety"
+    topic "lex://estream/apps/polyqlabs.git/safety"
     retention 365d
     consumers [console, alerts, streamsight]
 

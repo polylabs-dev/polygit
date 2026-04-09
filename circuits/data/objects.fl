@@ -1,5 +1,5 @@
 /// objects.fl — VCS object types (blob, tree, commit, tag)
-/// lex polylabs/poly-git/data
+/// lex polyqlabs/poly-git/data
 /// Epic: polylabs-dev/poly-git
 
 component poly_git version "0.1.0" {

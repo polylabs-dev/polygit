@@ -1,4 +1,4 @@
-# Poly Git Architecture
+# Q Git Architecture
 
 **Version**: 1.0
 **Last Updated**: February 2026
@@ -7,7 +7,7 @@
 
 ## Overview
 
-Poly Git is PQ-signed version control with enterprise governance. It wraps eStream's `es-git` CLI to provide a git-compatible workflow where every object is scatter-stored, every commit is ML-DSA-87 signed, and every operation passes through lex-governed RBAC.
+Q Git is PQ-signed version control with enterprise governance. It wraps eStream's `es-git` CLI to provide a git-compatible workflow where every object is scatter-stored, every commit is ML-DSA-87 signed, and every operation passes through lex-governed RBAC.
 
 ---
 
@@ -15,7 +15,7 @@ Poly Git is PQ-signed version control with enterprise governance. It wraps eStre
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         Poly Git Architecture                          │
+│                         Q Git Architecture                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  DEVELOPER WORKFLOW (unchanged)                                         │
@@ -94,7 +94,7 @@ A git remote helper that intercepts standard git operations and routes them thro
 
 ### 2. es-git CLI (Platform Layer)
 
-The existing eStream CLI tool at `estream/tools/es-git/` provides the storage backend. Poly Git wraps this with product-level UX and governance.
+The existing eStream CLI tool at `estream/tools/es-git/` provides the storage backend. Q Git wraps this with product-level UX and governance.
 
 **Commands**: init, add, commit, log, status, branch, checkout, push, pull, clone, migrate, dual-write, verify
 
@@ -177,7 +177,7 @@ Configuration via `.estream/review-config.yaml` and `.estream/promotion-config.y
 
 ## Hybrid Architecture
 
-Poly Git supports a dual-mode deployment:
+Q Git supports a dual-mode deployment:
 
 ### Mode 1: GitHub + Scatter Overlay
 
@@ -242,7 +242,7 @@ Repository (scatter-cas root)
 
 ## Stratum & Cortex Integration
 
-Poly Git's graph constructs compose Stratum storage bindings and Cortex AI governance at the data-declaration level. Every node type in the repo registry declares its storage tier, lex governance path, and Cortex visibility policy inline — no separate configuration layer.
+Q Git's graph constructs compose Stratum storage bindings and Cortex AI governance at the data-declaration level. Every node type in the repo registry declares its storage tier, lex governance path, and Cortex visibility policy inline — no separate configuration layer.
 
 ### Stratum Storage Bindings
 

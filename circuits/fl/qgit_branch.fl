@@ -1,7 +1,7 @@
-// Poly Git Branch — Branch management, merging, and ref resolution (v0.11.0)
+// Q Git Branch — Branch management, merging, and ref resolution (v0.11.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git/branch
+//   esn/global/org/polyqlabs/git/branch
 //   Branches are named refs pointing to commit ObjectIds.
 //   Refs stored on Stratum KV; merge operations require PQ-signed commits.
 //
@@ -15,9 +15,9 @@
 //   ThreeWay    — compute merge base, create merge commit with two parents
 //   Rebase      — replay commits onto target tip, re-sign each
 
-import polykit_identity
-import polygit_repository
-import polygit_commit
+import qkit_identity
+import qgit_repository
+import qgit_commit
 
 data BranchRef : git v1 {
     repo_id: RepoId,
@@ -28,7 +28,7 @@ data BranchRef : git v1 {
     updated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/branch
+    govern lex esn/global/org/polyqlabs/git/branch
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -48,7 +48,7 @@ data MergeResult : git v1 {
     commits_merged: u32,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/branch
+    govern lex esn/global/org/polyqlabs/git/branch
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -61,7 +61,7 @@ data CherryPickResult : git v1 {
     conflicts: list<string>,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/branch
+    govern lex esn/global/org/polyqlabs/git/branch
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -73,7 +73,7 @@ stream branch_events: event<BranchRef>
 // --- Create a new branch pointing at a commit (Wire opcode 0xA3 REF_UPDATE) ---
 circuit create_branch(repo_id: RepoId, name: string, target: ObjectId, protected: bool) -> BranchRef
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/branch
+    lex esn/global/org/polyqlabs/git/branch
     precision C
     observe metrics: [branches_created, protected_branches]
     monitor "branch_creation_rate" { branches_created < 500 per 3600s }
@@ -104,7 +104,7 @@ circuit create_branch(repo_id: RepoId, name: string, target: ObjectId, protected
 @guard(block_on: protected_branch)
 circuit delete_branch(repo_id: RepoId, name: string) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/branch
+    lex esn/global/org/polyqlabs/git/branch
     precision C
     observe metrics: [branches_deleted, protected_delete_blocked]
     monitor "branch_deletion_audit" { branches_deleted < 50 per 3600s }
@@ -133,7 +133,7 @@ circuit merge_branches(
     signing_sk: bytes(4896)
 ) -> MergeResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/git/branch
+    lex esn/global/org/polyqlabs/git/branch
     precision C
     constant_time true
     observe metrics: [merges_attempted, merges_succeeded, merge_conflicts, strategy_used]
@@ -204,7 +204,7 @@ circuit cherry_pick(
     signing_sk: bytes(4896)
 ) -> CherryPickResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/git/branch
+    lex esn/global/org/polyqlabs/git/branch
     precision C
     constant_time true
     observe metrics: [cherry_picks, cherry_pick_conflicts]
@@ -233,7 +233,7 @@ circuit cherry_pick(
 // --- List all branches for a repository ---
 circuit list_branches(repo_id: RepoId) -> list<BranchRef>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/branch
+    lex esn/global/org/polyqlabs/git/branch
     precision B
     observe metrics: [branch_list_queries, branch_count]
     monitor "branch_count" { branch_count < 10000 }

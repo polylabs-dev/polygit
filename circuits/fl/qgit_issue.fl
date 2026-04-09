@@ -1,7 +1,7 @@
-// Poly Git Issue Tracking — Issue lifecycle composing eStream issue_tracking.fl (v0.11.0)
+// Q Git Issue Tracking — Issue lifecycle composing eStream issue_tracking.fl (v0.11.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git/issues
+//   esn/global/org/polyqlabs/git/issues
 //   Issue tracking with state machine lifecycle, labels, milestones, and
 //   blocking dependencies. Composes eStream's issue_tracking.fl patterns
 //   for anomaly detection and lifecycle governance.
@@ -11,9 +11,9 @@
 //   They reference commits via commit_id linkage but are stored in the
 //   issue namespace, not in scatter-CAS.
 
-import polykit_identity
-import polygit_repository
-import polygit_commit
+import qkit_identity
+import qgit_repository
+import qgit_commit
 
 // Upstream eStream issue tracking
 import estream.circuits.core.data.graphs.issue_tracking
@@ -56,7 +56,7 @@ data Issue : git v1 {
     closed_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/issues
+    govern lex esn/global/org/polyqlabs/git/issues
     cortex {
         redact [author, assignees]
         infer on_write
@@ -73,7 +73,7 @@ data IssueComment : git v1 {
     updated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/issues
+    govern lex esn/global/org/polyqlabs/git/issues
     cortex {
         redact [author]
         infer on_write
@@ -89,7 +89,7 @@ data IssueLabel : git v1 {
     created_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/issues
+    govern lex esn/global/org/polyqlabs/git/issues
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -106,7 +106,7 @@ data Milestone : git v1 {
     created_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/issues
+    govern lex esn/global/org/polyqlabs/git/issues
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -155,7 +155,7 @@ circuit create_issue(
     milestone_id: bytes(16)
 ) -> Issue
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/issues
+    lex esn/global/org/polyqlabs/git/issues
     precision C
     observe metrics: [issues_created, issue_priority, issues_per_repo]
     monitor "issue_creation_rate" { issues_created < 500 per 3600s }
@@ -214,7 +214,7 @@ circuit update_issue(
     labels: list<bytes(16)>
 ) -> Issue
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/issues
+    lex esn/global/org/polyqlabs/git/issues
     precision C
     observe metrics: [issues_updated, fields_changed]
     monitor "issue_update_rate" { issues_updated < 1000 per 3600s }
@@ -255,7 +255,7 @@ circuit close_issue(
     duplicate_of: bytes(16)
 ) -> Issue
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/issues
+    lex esn/global/org/polyqlabs/git/issues
     precision C
     observe metrics: [issues_closed, close_reason, resolution_time_ms]
     monitor "issue_closure_rate" { issues_closed < 200 per 3600s }
@@ -315,7 +315,7 @@ circuit add_comment(
     body: string
 ) -> IssueComment
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/issues
+    lex esn/global/org/polyqlabs/git/issues
     precision C
     observe metrics: [comments_created, comments_per_issue]
     monitor "comment_rate" { comments_created < 2000 per 3600s }
@@ -347,7 +347,7 @@ circuit add_comment(
 // --- Create a label ---
 circuit create_label(repo_id: bytes(32), name: string, color: string, description: string) -> IssueLabel
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/issues
+    lex esn/global/org/polyqlabs/git/issues
     precision B
     observe metrics: [labels_created]
     monitor "label_creation_rate" { labels_created < 200 per 3600s }

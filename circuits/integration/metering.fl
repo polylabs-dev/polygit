@@ -1,18 +1,18 @@
-/// metering.fl — VCS metering integration via polykit-metering
-/// lex polylabs/poly-git/integration
+/// metering.fl — VCS metering integration via qkit-metering
+/// lex polyqlabs/poly-git/integration
 
-import polykit_metering from "polykit-metering@^0.2.0"
+import qkit_metering from "qkit-metering@^0.2.0"
 
 circuit meter_push(
     user_id: bytes(16),
     objects_count: u64,
     total_bytes: u64
 ) -> bool
-    lex polylabs/poly-git/integration
+    lex polyqlabs/poly-git/integration
     precision B
     observe metrics: [push_metering]
 {
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 1,
         hashes: objects_count,
         bandwidth: total_bytes,
@@ -22,10 +22,10 @@ circuit meter_push(
         circuits: 0,
         mpc_sessions: 0,
     }
-    polykit_metering::record_usage(user_id, "vcs.push", dims)
-    let violations = polykit_metering::check_limits(
-        polykit_metering::get_usage_summary(user_id),
-        polykit_metering::TierLimits { tier_name: "default", limits: dims }
+    qkit_metering::record_usage(user_id, "vcs.push", dims)
+    let violations = qkit_metering::check_limits(
+        qkit_metering::get_usage_summary(user_id),
+        qkit_metering::TierLimits { tier_name: "default", limits: dims }
     )
     len(violations) == 0
 }
@@ -35,11 +35,11 @@ circuit meter_pull(
     objects_count: u64,
     total_bytes: u64
 ) -> bool
-    lex polylabs/poly-git/integration
+    lex polyqlabs/poly-git/integration
     precision B
     observe metrics: [pull_metering]
 {
-    let dims = polykit_metering::DimensionValues {
+    let dims = qkit_metering::DimensionValues {
         executions: 1,
         hashes: objects_count,
         bandwidth: total_bytes,
@@ -49,6 +49,6 @@ circuit meter_pull(
         circuits: 0,
         mpc_sessions: 0,
     }
-    polykit_metering::record_usage(user_id, "vcs.pull", dims)
+    qkit_metering::record_usage(user_id, "vcs.pull", dims)
     true
 }

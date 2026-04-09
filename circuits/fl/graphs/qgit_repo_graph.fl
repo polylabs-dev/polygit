@@ -1,9 +1,9 @@
-/// Poly Git Repo Graph — Repository registry with org/group hierarchy and anomaly detection (v0.11.0)
+/// Q Git Repo Graph — Repository registry with org/group hierarchy and anomaly detection (v0.11.0)
 /// Stratum graph storage + Cortex AI governance
-/// govern lex esn/global/org/polylabs/git
+/// govern lex esn/global/org/polyqlabs/git
 
-import polygit_repository
-import polygit_commit
+import qgit_repository
+import qgit_commit
 
 // ── Data: Node types (data + store graph + cortex) ──────────────
 
@@ -19,7 +19,7 @@ data RepoNode : git v1 {
     classification: string,
 }
     store graph
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         obfuscate [owner_id]
         infer on_write
@@ -36,7 +36,7 @@ data OrgNode : git v1 {
     quota_repos: u32,
 }
     store graph
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         obfuscate [admin_id]
         redact [owner_pubkey]
@@ -53,7 +53,7 @@ data GroupNode : git v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -68,7 +68,7 @@ data ContributorNode : git v1 {
     joined_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/git
+    govern lex esn/global/org/polyqlabs/git
     cortex {
         redact [email, pubkey]
         obfuscate [user_id]
@@ -169,7 +169,7 @@ stream contributor_events: event<ContributorNode>
 
 circuit register_org(graph_id: bytes(32), org: OrgNode) -> bytes(32)
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -187,7 +187,7 @@ circuit register_org(graph_id: bytes(32), org: OrgNode) -> bytes(32)
 
 circuit register_group(graph_id: bytes(32), group: GroupNode) -> bytes(32)
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -209,7 +209,7 @@ circuit register_group(graph_id: bytes(32), group: GroupNode) -> bytes(32)
 
 circuit register_repo(graph_id: bytes(32), repo: RepoNode) -> bytes(32)
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -231,7 +231,7 @@ circuit register_repo(graph_id: bytes(32), repo: RepoNode) -> bytes(32)
 
 circuit register_contributor(graph_id: bytes(32), contributor: ContributorNode) -> bytes(32)
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -251,7 +251,7 @@ circuit register_contributor(graph_id: bytes(32), contributor: ContributorNode) 
 
 circuit record_contribution(graph_id: bytes(32), contributor_id: bytes(32), repo_id: bytes(32), commit_count: u64, bytes_pushed: u64) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -284,7 +284,7 @@ circuit record_contribution(graph_id: bytes(32), contributor_id: bytes(32), repo
 
 circuit record_fork(graph_id: bytes(32), source_repo: bytes(32), forked_repo: bytes(32)) -> bytes(16)
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -307,7 +307,7 @@ circuit record_fork(graph_id: bytes(32), source_repo: bytes(32), forked_repo: by
 
 circuit transition_repo_state(graph_id: bytes(32), repo_id: bytes(32), event: string, actor: bytes(32)) -> string
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -337,7 +337,7 @@ circuit transition_repo_state(graph_id: bytes(32), repo_id: bytes(32), event: st
 
 circuit query_repos_by_org(graph_id: bytes(32), org_id: bytes(32)) -> list<RepoNode>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision B
     observe metrics: [org_repo_queries, repos_returned]
@@ -363,7 +363,7 @@ circuit query_repos_by_org(graph_id: bytes(32), org_id: bytes(32)) -> list<RepoN
 
 circuit detect_push_anomalies(graph_id: bytes(32), repo_id: bytes(32), window_s: u64) -> bool
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision C
     povc true
@@ -389,7 +389,7 @@ circuit detect_push_anomalies(graph_id: bytes(32), repo_id: bytes(32), window_s:
 
 circuit get_contributor_stats(graph_id: bytes(32), repo_id: bytes(32)) -> list<ContributesEdge>
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git
+    lex esn/global/org/polyqlabs/git
     status production
     precision B
     observe metrics: [contributor_stat_queries]

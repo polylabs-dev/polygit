@@ -5,25 +5,25 @@
 | **Status** | Planned |
 | **Priority** | P0 |
 | **Product** | PolyGit |
-| **Depends On** | PolyKit CE Framework, eStream CE Implementation |
+| **Depends On** | QKit CE Framework, eStream CE Implementation |
 | **Spec** | `specs/POLYGIT_CE_APP_GRAPH_SPEC.md` |
 
 ---
 
 ## Overview
 
-Integrate PolyGit with the eStream Cognitive Engine (CE) and App Graph module stratum. This registers PolyGit's 13 product-level modules into the platform graph, establishes cross-graph bridge edges to es-vcs, PolyKit CI, and PolyDocs, and activates 3 CE meaning domains for commit pattern analysis, code quality tracking, and governance compliance monitoring. Two SME panels surface actionable insights for code review quality and CI pipeline optimization.
+Integrate PolyGit with the eStream Cognitive Engine (CE) and App Graph module stratum. This registers PolyGit's 13 product-level modules into the platform graph, establishes cross-graph bridge edges to es-vcs, QKit CI, and PolyDocs, and activates 3 CE meaning domains for commit pattern analysis, code quality tracking, and governance compliance monitoring. Two SME panels surface actionable insights for code review quality and CI pipeline optimization.
 
 ---
 
 ## Tasks
 
 - [ ] Create `specs/POLYGIT_CE_APP_GRAPH_SPEC.md` — CE + App Graph integration spec
-- [ ] Create `circuits/fl/polygit_app_graph.fl` — 13 ModuleNode declarations, EDGE_REQUIRES dependency edges, cross-graph bridge registration, governance edge registration
-- [ ] Create `circuits/fl/polygit_meaning.fl` — 3 meaning domains (`vcs/commit_patterns`, `vcs/code_quality`, `vcs/governance`), noise filter, 2 SME panels, orchestrator circuit
+- [ ] Create `circuits/fl/qgit_app_graph.fl` — 13 ModuleNode declarations, EDGE_REQUIRES dependency edges, cross-graph bridge registration, governance edge registration
+- [ ] Create `circuits/fl/qgit_meaning.fl` — 3 meaning domains (`vcs/commit_patterns`, `vcs/code_quality`, `vcs/governance`), noise filter, 2 SME panels, orchestrator circuit
 - [ ] Update `estream-component.toml` with strategic grant declarations for eStream platform grant and Paragon partner grant
-- [ ] Golden tests for `polygit_app_graph.fl` — module count, edge count, bridge edges, governance edges, module lookup
-- [ ] Golden tests for `polygit_meaning.fl` — domain validity (weights sum to 1.0), noise filter rules, SME panel configs, orchestrator registration
+- [ ] Golden tests for `qgit_app_graph.fl` — module count, edge count, bridge edges, governance edges, module lookup
+- [ ] Golden tests for `qgit_meaning.fl` — domain validity (weights sum to 1.0), noise filter rules, SME panel configs, orchestrator registration
 - [ ] Update `CLAUDE.md` with CE conventions — meaning domain naming, noise filter patterns, SME panel configuration guidelines
 
 ---
@@ -32,7 +32,7 @@ Integrate PolyGit with the eStream Cognitive Engine (CE) and App Graph module st
 
 - All 13 modules registered in app graph with correct aperture partitions, SLA tiers, and resource budgets
 - 18 EDGE_REQUIRES intra-graph dependency edges established
-- 3 EDGE_BRIDGE_TO cross-graph edges (es-vcs, PolyKit CI, PolyDocs) registered
+- 3 EDGE_BRIDGE_TO cross-graph edges (es-vcs, QKit CI, PolyDocs) registered
 - 13 GOVERNANCE_OBSERVE edges from platform governance to all PolyGit modules
 - 3 CE meaning domains active with crystallization thresholds (50/30/20 events)
 - Impact weights sum to 1.0 across all meaning domains
@@ -44,10 +44,10 @@ Integrate PolyGit with the eStream Cognitive Engine (CE) and App Graph module st
 
 ## Dependencies
 
-### PolyKit Circuits
+### QKit Circuits
 
-- `polylabs/polykit/cognitive.fl` — CE framework: `register_meaning_domain`, `register_noise_filter`, `register_sme_panel`
-- `polylabs/polykit/ci.fl` — CI runner bridge target (`polykit_ci_runner`)
+- `polyqlabs/qkit/cognitive.fl` — CE framework: `register_meaning_domain`, `register_noise_filter`, `register_sme_panel`
+- `polyqlabs/qkit/ci.fl` — CI runner bridge target (`qkit_ci_runner`)
 
 ### eStream Core
 

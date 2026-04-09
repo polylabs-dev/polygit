@@ -1,9 +1,9 @@
-// Poly Git Document Review — Document diff and review for DOCX/PPTX changes
+// Q Git Document Review — Document diff and review for DOCX/PPTX changes
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/git/document
+//   esn/global/org/polyqlabs/git/document
 //   sub_lex document_review_session fan_in — per-review session telemetry
-//   Composes polykit_studio_document to render structural diffs of binary document
+//   Composes qkit_studio_document to render structural diffs of binary document
 //   formats (DOCX, PPTX, XLSX, PDF) committed to es-git repos. Reviewers see
 //   paragraph-level change tracking, slide diffs, and cell-level deltas rather
 //   than opaque binary blobs. Annotations and approvals are ML-DSA-87 signed.
@@ -13,9 +13,9 @@
 //   0xB1 DOCUMENT_ANNOTATE — add a signed annotation to a document diff
 //   0xB2 DOCUMENT_APPROVE  — approve a document change with signed review
 
-import polykit_studio_document
-import polygit_review
-import polygit_metering
+import qkit_studio_document
+import qgit_review
+import qgit_metering
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ data DocumentDiffSession : git v1 {
     computed_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/document
+    govern lex esn/global/org/polyqlabs/git/document
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -72,7 +72,7 @@ data DocumentDiffEntry : git v1 {
     description: string,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/document
+    govern lex esn/global/org/polyqlabs/git/document
     cortex {
         infer on_write
         on_anomaly alert "git-team"
@@ -89,7 +89,7 @@ data DocumentAnnotation : git v1 {
     created_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/document
+    govern lex esn/global/org/polyqlabs/git/document
     cortex {
         redact [reviewer, signature]
         infer on_write
@@ -107,7 +107,7 @@ data DocumentApproval : git v1 {
     approved_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/git/document
+    govern lex esn/global/org/polyqlabs/git/document
     cortex {
         redact [reviewer, reviewer_pubkey, signature]
         infer on_write
@@ -140,7 +140,7 @@ circuit diff_documents(
     format: DocumentFormat,
 ) -> DocumentDiffSession
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/document {
+    lex esn/global/org/polyqlabs/git/document {
         sub_lex document_review_session fan_in
     }
     precision C
@@ -161,9 +161,9 @@ circuit diff_documents(
     let diff_seed = concat(repo_id, base_commit, head_commit, encode(file_path), csprng(16))
     let diff_id = bit_slice(sha3_256(diff_seed), 0, 128)
 
-    let base_structure = polykit_studio_document::parse_structure(base_content, format)
-    let head_structure = polykit_studio_document::parse_structure(head_content, format)
-    let diff_entries = polykit_studio_document::compute_structural_diff(base_structure, head_structure)
+    let base_structure = qkit_studio_document::parse_structure(base_content, format)
+    let head_structure = qkit_studio_document::parse_structure(head_content, format)
+    let diff_entries = qkit_studio_document::compute_structural_diff(base_structure, head_structure)
 
     let additions = count(diff_entries, |e| e.old_content_hash == zero_bytes(32))
     let deletions = count(diff_entries, |e| e.new_content_hash == zero_bytes(32))
@@ -187,7 +187,7 @@ circuit diff_documents(
     eslite_insert("document_diffs", diff_id, session)
     emit(document_diff_events, session)
 
-    polygit_metering::record_usage(repo_id, "git_document_diff", DimensionValues {
+    qgit_metering::record_usage(repo_id, "git_document_diff", DimensionValues {
         executions: 1, hashes: 1, bandwidth: len(base_content) + len(head_content),
         storage: 0, observables: 2, proofs: 0, circuits: 1, mpc_sessions: 0,
     })
@@ -206,7 +206,7 @@ circuit annotate_document(
     severity: AnnotationSeverity,
 ) -> DocumentAnnotation
     profile poly_framework_standard
-    lex esn/global/org/polylabs/git/document {
+    lex esn/global/org/polyqlabs/git/document {
         sub_lex document_review_session fan_in
     }
     precision C
@@ -250,7 +250,7 @@ circuit approve_document_change(
     signing_sk: bytes(4896),
 ) -> DocumentApproval
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/git/document {
+    lex esn/global/org/polyqlabs/git/document {
         sub_lex document_review_session fan_in
     }
     precision C
